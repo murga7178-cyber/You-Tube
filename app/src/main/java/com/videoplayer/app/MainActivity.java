@@ -1,8 +1,11 @@
 package com.videoplayer.app;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
@@ -15,8 +18,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * YouTube (m.youtube.com) खोलता है। किसी भी वीडियो / थंबनेल / Shorts पर क्लिक होते ही
- * उसका लिंक पकड़कर PlayerActivity (वीडियो प्लेयर) में चला देता है।
+ * YouTube (m.youtube.com) खोलता है (वाइट / लाइट मोड में)। किसी भी वीडियो / थंबनेल / Shorts पर
+ * क्लिक होते ही उसका लिंक पकड़कर PlayerActivity (वीडियो प्लेयर) में चला देता है।
  */
 public class MainActivity extends Activity {
 
@@ -41,11 +44,21 @@ public class MainActivity extends Activity {
 
     private WebView web;
 
+    /** फोन डार्क मोड में हो तब भी यह ऐप (और YouTube) हमेशा वाइट मोड में रहे */
     @Override
+    protected void attachBaseContext(Context base) {
+        Configuration c = new Configuration(base.getResources().getConfiguration());
+        c.uiMode = (c.uiMode & ~Configuration.UI_MODE_NIGHT_MASK) | Configuration.UI_MODE_NIGHT_NO;
+        super.attachBaseContext(base.createConfigurationContext(c));
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         web = new WebView(this);
+        web.setBackgroundColor(Color.WHITE);
         setContentView(web);
 
         WebSettings s = web.getSettings();
@@ -53,6 +66,7 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setSupportMultipleWindows(false);
+        s.setForceDark(WebSettings.FORCE_DARK_OFF);
 
         CookieManager cm = CookieManager.getInstance();
         cm.setAcceptCookie(true);
