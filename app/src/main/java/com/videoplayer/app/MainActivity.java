@@ -11,6 +11,7 @@ import android.graphics.Color;
 import android.graphics.Outline;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.TextUtils;
@@ -56,12 +57,15 @@ public class MainActivity extends Activity {
     private static final String HOOK =
             "(function(){"
             + "if(window.__vpHooked)return;window.__vpHooked=true;"
+            + "try{var mm=window.matchMedia;window.matchMedia=function(q){if(/prefers-color-scheme/.test(q)){return {matches:/light/.test(q),media:q,onchange:null,addListener:function(){},removeListener:function(){},addEventListener:function(){},removeEventListener:function(){},dispatchEvent:function(){return false}};}return mm.call(window,q);};}catch(x){}"
+            + "try{var de=document.documentElement;var fix=function(){if(de.hasAttribute('dark'))de.removeAttribute('dark');};fix();new MutationObserver(fix).observe(de,{attributes:true,attributeFilter:['dark']});}catch(x){}"
             + "window.addEventListener('click',function(e){"
             + "var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;"
             + "if(!a)return;"
             + "var h=a.hostname,p=a.pathname;"
             + "var yt=(h==='www.youtube.com'||h==='m.youtube.com'||h==='youtube.com');"
-            + "var ok=(yt&&(p==='/watch'||p.indexOf('/shorts/')===0||p.indexOf('/live/')===0||p==='/playlist'))||h==='youtu.be';"
+            + "if(yt&&p.indexOf('/shorts/')===0){try{VideoBridge.shorts();}catch(x){}return;}"
+            + "var ok=(yt&&(p==='/watch'||p.indexOf('/live/')===0||p==='/playlist'))||h==='youtu.be';"
             + "if(!ok)return;"
             + "e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();"
             + "try{var v=document.querySelector('video');if(v)v.pause();}catch(x){}"
@@ -71,6 +75,7 @@ public class MainActivity extends Activity {
 
     private int mode = MODE_NONE;
     private int corner;
+    private boolean fsOn;
 
     private FrameLayout root;
     private WebView ytWeb;
@@ -135,7 +140,7 @@ public class MainActivity extends Activity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 String url = request.getUrl().toString();
-                if (request.isForMainFrame() && VideoLink.parse(url) != null) {
+                if (request.isForMainFrame() && !isShorts(url) && VideoLink.parse(url) != null) {
                     openPlayer(url);
                     return true;
                 }
@@ -153,8 +158,42 @@ public class MainActivity extends Activity {
             }
         });
 
+        forceLightCookie(cm);
         ytWeb.loadUrl(HOME);
         handleShare(getIntent());
+    }
+
+    private static boolean isShorts(String url) {
+        try {
+            String path = Uri.parse(url).getPath();
+            return path != null && path.startsWith("/shorts/");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** YouTube की अपनी थीम-सेटिंग (PREF कुकी) को लाइट पर कर देता है */
+    private void forceLightCookie(CookieManager cm) {
+        try {
+            String cur = cm.getCookie("https://m.youtube.com");
+            String pref = "";
+            if (cur != null) {
+                for (String c : cur.split(";")) {
+                    c = c.trim();
+                    if (c.startsWith("PREF=")) pref = c.substring(5);
+                }
+            }
+            StringBuilder nb = new StringBuilder("f6=80000");
+            if (!pref.isEmpty()) {
+                for (String kv : pref.split("&")) {
+                    if (!kv.isEmpty() && !kv.startsWith("f6=")) nb.append('&').append(kv);
+                }
+            }
+            cm.setCookie("https://m.youtube.com",
+                    "PREF=" + nb + "; Domain=.youtube.com; Path=/; Secure; Max-Age=31536000");
+            cm.flush();
+        } catch (Exception ignored) {
+        }
     }
 
     // ------------------------------------------------------------------
@@ -389,6 +428,7 @@ public class MainActivity extends Activity {
 
     private void stopPlayer() {
         if (customView != null) pWeb.getWebChromeClient().onHideCustomView();
+        if (fsOn) setFullscreen(false);
         spinner.removeCallbacks(hideSpinner);
         pWeb.loadUrl("about:blank");
         WindowManager.LayoutParams lp = getWindow().getAttributes();
@@ -397,9 +437,44 @@ public class MainActivity extends Activity {
         setMode(MODE_NONE);
     }
 
+    /** पूरा स्क्रीन: आड़ा (landscape), बिना बार, नॉच तक वीडियो */
+    @SuppressWarnings("deprecation")
+    private void setFullscreen(boolean on) {
+        if (mode == MODE_NONE) return;
+        fsOn = on;
+        WindowManager.LayoutParams a = getWindow().getAttributes();
+        if (on) {
+            a.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(a);
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        } else {
+            a.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+            getWindow().setAttributes(a);
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        }
+        fullBg.setVisibility((!on && mode == MODE_FULL) ? View.VISIBLE : View.GONE);
+        corner = on ? 0 : dp(16);
+        card.invalidateOutline();
+        applyCardLayout();
+        applyChrome();
+        pWeb.evaluateJavascript("setFs(" + on + ")", null);
+    }
+
     private void applyCardLayout() {
         FrameLayout.LayoutParams lp;
-        if (mode == MODE_MINI) {
+        if (fsOn) {
+            lp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        } else if (mode == MODE_MINI) {
             lp = new FrameLayout.LayoutParams(dp(MINI_W), dp(MINI_CARD_H));
             lp.gravity = Gravity.CENTER_VERTICAL | Gravity.LEFT;
             lp.leftMargin = dp(8);
@@ -421,7 +496,7 @@ public class MainActivity extends Activity {
     /** स्टेटस बार / नेविगेशन बार के रंग: बड़े प्लेयर में गहरे, बाकी में वाइट */
     @SuppressWarnings("deprecation")
     private void applyChrome() {
-        if (customView != null) return;
+        if (customView != null || fsOn) return;
         if (mode == MODE_FULL) {
             getWindow().setStatusBarColor(0xFF222222);
             getWindow().setNavigationBarColor(0xFF000000);
@@ -464,6 +539,16 @@ public class MainActivity extends Activity {
     /** YouTube पेज से: वीडियो पर क्लिक */
     private class Bridge {
         @JavascriptInterface
+        public void shorts() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (mode != MODE_NONE) stopPlayer();
+                }
+            });
+        }
+
+        @JavascriptInterface
         public void play(final String url) {
             runOnUiThread(new Runnable() {
                 @Override
@@ -479,6 +564,16 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void ready() {
             runOnUiThread(hideSpinner);
+        }
+
+        @JavascriptInterface
+        public void fullscreen(final boolean on) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    setFullscreen(on);
+                }
+            });
         }
 
         /** ब्राइटनेस स्लाइडर: 5 से 100 */
@@ -524,6 +619,8 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         if (customView != null) {
             pWeb.getWebChromeClient().onHideCustomView();
+        } else if (fsOn) {
+            setFullscreen(false);
         } else if (mode == MODE_FULL) {
             setMode(MODE_MINI);          // बैक -> वीडियो नीचे छोटा होकर चलता रहेगा
         } else if (ytWeb != null && ytWeb.canGoBack()) {
