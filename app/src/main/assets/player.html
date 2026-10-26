@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<style>
+html,body{margin:0;height:100%;background:#000;overflow:hidden;-webkit-tap-highlight-color:transparent;font-family:sans-serif}
+#wrap{position:fixed;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;background:#000}
+#stage{position:relative;flex:1;min-height:0;background:#000}
+#player,#player iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
+#shield{position:absolute;top:0;left:0;right:0;bottom:0;z-index:2}
+#big{position:absolute;z-index:3;left:50%;top:50%;width:64px;height:64px;margin:-32px 0 0 -32px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:30px;display:none;align-items:center;justify-content:center;pointer-events:none}
+#msg{position:absolute;z-index:4;left:16px;right:16px;top:50%;transform:translateY(-50%);text-align:center;color:#fff;font-size:15px;line-height:1.5;display:none;background:rgba(0,0,0,.8);padding:14px;border-radius:12px}
+#bar{display:flex;align-items:center;gap:8px;padding:0 10px;height:52px;background:#0f0f0f;color:#fff;font-size:13px;flex:none}
+#pp,#fs{background:none;border:0;color:#fff;font-size:22px;width:38px;height:38px;padding:0;flex:none}
+#seek{flex:1;min-width:0;accent-color:#f00;height:30px;margin:0}
+.t{flex:none;min-width:86px;text-align:center}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <div id="player"></div>
+    <div id="shield"></div>
+    <div id="big">&#9654;</div>
+    <div id="msg"></div>
+  </div>
+  <div id="bar">
+    <button id="pp">&#9654;</button>
+    <span class="t" id="tm">0:00 / 0:00</span>
+    <input id="seek" type="range" min="0" max="1000" value="0">
+    <button id="fs">&#9974;</button>
+  </div>
+</div>
+<script>
+var VID = "__ID__", LST = "__LIST__", ST = __START__;
+var p = null, dragging = false;
+function $(i) { return document.getElementById(i); }
+function fmt(s) {
+  s = Math.max(0, Math.floor(s || 0));
+  var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), c = s % 60;
+  return (h ? h + ":" + (m < 10 ? "0" : "") : "") + m + ":" + (c < 10 ? "0" : "") + c;
+}
+
+var tag = document.createElement("script");
+tag.src = "https://www.youtube.com/iframe_api";
+document.head.appendChild(tag);
+
+function onYouTubeIframeAPIReady() {
+  var v = {
+    autoplay: 1, controls: 0, disablekb: 1, fs: 0, iv_load_policy: 3,
+    rel: 0, modestbranding: 1, playsinline: 1, cc_load_policy: 0,
+    origin: "https://videoplayer.app"
+  };
+  if (ST > 0) v.start = ST;
+  if (LST) { v.list = LST; if (!VID) v.listType = "playlist"; }
+  var o = {
+    host: "https://www.youtube-nocookie.com",
+    playerVars: v,
+    events: { onReady: onReady, onStateChange: onState, onError: onError }
+  };
+  if (VID) o.videoId = VID;
+  p = new YT.Player("player", o);
+}
+
+function onReady() {
+  if (window.Native) Native.ready();
+  setInterval(tick, 250);
+}
+
+function onState(e) {
+  var s = e.data;
+  $("pp").innerHTML = (s === 1 || s === 3) ? "&#9208;" : "&#9654;";
+  $("big").style.display = (s === 1 || s === 3) ? "none" : "flex";
+  if (s === 0) { p.seekTo(0, true); p.pauseVideo(); }
+}
+
+function onError() {
+  if (window.Native) Native.ready();
+  var m = $("msg");
+  m.style.display = "block";
+  m.textContent = "यह वीडियो यहाँ नहीं चल सकता (मालिक ने बाहर चलाने की अनुमति नहीं दी है या वीडियो उपलब्ध नहीं है)।";
+}
+
+function tick() {
+  if (!p || !p.getDuration) return;
+  var d = p.getDuration() || 0, c = p.getCurrentTime() || 0;
+  if (!dragging && d > 0) $("seek").value = (c / d) * 1000;
+  if (!dragging) $("tm").textContent = fmt(c) + " / " + fmt(d);
+}
+
+function toggle() {
+  if (!p || !p.getPlayerState) return;
+  var s = p.getPlayerState();
+  if (s === 1 || s === 3) p.pauseVideo(); else p.playVideo();
+}
+
+$("shield").addEventListener("click", toggle);
+$("pp").addEventListener("click", toggle);
+
+$("seek").addEventListener("input", function () {
+  dragging = true;
+  var d = (p && p.getDuration) ? p.getDuration() : 0;
+  $("tm").textContent = fmt((this.value / 1000) * d) + " / " + fmt(d);
+});
+$("seek").addEventListener("change", function () {
+  var d = (p && p.getDuration) ? p.getDuration() : 0;
+  if (d > 0) p.seekTo((this.value / 1000) * d, true);
+  dragging = false;
+});
+
+$("fs").addEventListener("click", function () {
+  var d = document, w = $("wrap");
+  if (d.fullscreenElement || d.webkitFullscreenElement) {
+    (d.exitFullscreen || d.webkitExitFullscreen).call(d);
+  } else {
+    (w.requestFullscreen || w.webkitRequestFullscreen).call(w);
+  }
+});
+</script>
+</body>
+</html>
