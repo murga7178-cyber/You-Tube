@@ -8,13 +8,21 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;-webkit-tap-highl
 #wrap{position:fixed;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;background:#000}
 #stage{position:relative;flex:1;min-height:0;background:#000}
 #player,#player iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
-#shield{position:absolute;top:0;left:0;right:0;bottom:0;z-index:2}
-#big{position:absolute;z-index:3;left:50%;top:50%;width:64px;height:64px;margin:-32px 0 0 -32px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:30px;display:none;align-items:center;justify-content:center;pointer-events:none}
+#shield{position:absolute;top:0;left:0;right:0;bottom:0;z-index:2;touch-action:manipulation}
+#big{position:absolute;z-index:3;left:50%;top:50%;width:68px;height:68px;margin:-34px 0 0 -34px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:30px;border:0;padding:0;display:flex;align-items:center;justify-content:center;opacity:0;visibility:hidden;transition:opacity .2s}
+#big.on{opacity:1;visibility:visible}
 #msg{position:absolute;z-index:4;left:16px;right:16px;top:50%;transform:translateY(-50%);text-align:center;color:#fff;font-size:15px;line-height:1.5;display:none;background:rgba(0,0,0,.8);padding:14px;border-radius:12px}
-#bar{display:flex;align-items:center;gap:8px;padding:0 10px;height:52px;background:#0f0f0f;color:#fff;font-size:13px;flex:none}
+#bar{flex:none;background:#0f0f0f;color:#fff;font-size:13px}
+#r1,#r2{display:flex;align-items:center;gap:8px;padding:0 10px}
+#r1{height:52px}
+#r2{height:44px}
 #pp,#fs{background:none;border:0;color:#fff;font-size:22px;width:38px;height:38px;padding:0;flex:none}
-#seek{flex:1;min-width:0;accent-color:#f00;height:30px;margin:0}
-.t{flex:none;min-width:86px;text-align:center}
+#seek,#br{flex:1;min-width:0;height:30px;margin:0}
+#seek{accent-color:#f00}
+#br{accent-color:#f5b400}
+.t{flex:none;min-width:92px;text-align:center}
+.sk{background:#272727;border:0;color:#fff;border-radius:16px;height:32px;padding:0 12px;font-size:13px;flex:none}
+.ic{flex:none;font-size:18px}
 </style>
 </head>
 <body>
@@ -22,19 +30,27 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;-webkit-tap-highl
   <div id="stage">
     <div id="player"></div>
     <div id="shield"></div>
-    <div id="big">&#9654;</div>
+    <button id="big">&#9654;</button>
     <div id="msg"></div>
   </div>
   <div id="bar">
-    <button id="pp">&#9654;</button>
-    <span class="t" id="tm">0:00 / 0:00</span>
-    <input id="seek" type="range" min="0" max="1000" value="0">
-    <button id="fs">&#9974;</button>
+    <div id="r1">
+      <button id="pp">&#9654;</button>
+      <span class="t" id="tm">0:00 / 0:00</span>
+      <input id="seek" type="range" min="0" max="1000" value="0">
+      <button id="fs">&#9974;</button>
+    </div>
+    <div id="r2">
+      <button class="sk" id="b10">&#9194; 10</button>
+      <span class="ic">&#9728;</span>
+      <input id="br" type="range" min="5" max="100" value="50">
+      <button class="sk" id="f10">10 &#9193;</button>
+    </div>
   </div>
 </div>
 <script>
 var VID = "__ID__", LST = "__LIST__", ST = __START__;
-var p = null, dragging = false;
+var p = null, dragging = false, mini = false, ovlTimer = null, flashUntil = 0;
 function $(i) { return document.getElementById(i); }
 function fmt(s) {
   s = Math.max(0, Math.floor(s || 0));
@@ -68,11 +84,44 @@ function onReady() {
   setInterval(tick, 250);
 }
 
+/* ---------- वीडियो के ऊपर सिर्फ़ बीच का एक बटन (टैप करने पर) ---------- */
+function isPlaying() {
+  if (!p || !p.getPlayerState) return false;
+  var s = p.getPlayerState();
+  return s === 1 || s === 3;
+}
+function showOvl(sticky) {
+  if (mini) return;
+  $("big").classList.add("on");
+  clearTimeout(ovlTimer);
+  if (!sticky && isPlaying()) ovlTimer = setTimeout(hideOvl, 3000);
+}
+function hideOvl() {
+  clearTimeout(ovlTimer);
+  $("big").classList.remove("on");
+}
+
 function onState(e) {
-  var s = e.data;
-  $("pp").innerHTML = (s === 1 || s === 3) ? "&#9208;" : "&#9654;";
-  $("big").style.display = (s === 1 || s === 3) ? "none" : "flex";
-  if (s === 0) { p.seekTo(0, true); p.pauseVideo(); }
+  var s = e.data, playing = (s === 1 || s === 3);
+  var ic = playing ? "&#9208;" : "&#9654;";
+  $("pp").innerHTML = ic;
+  $("big").innerHTML = ic;
+  if (window.Native && Native.state) Native.state(s);
+  if (s === 0) { p.seekTo(0, true); p.pauseVideo(); return; }
+  if (s === 2) showOvl(true);                 // रुका हुआ: ▶ दिखता रहे
+  else if (s === 1 && $("big").classList.contains("on")) {
+    clearTimeout(ovlTimer);
+    ovlTimer = setTimeout(hideOvl, 1200);     // चलना शुरू: जल्दी छिप जाए
+  }
+}
+
+/* छोटे (मिनी) मोड में नीचे की बार और बटन छिपा देता है */
+function setMini(b) {
+  mini = b;
+  $("bar").style.display = b ? "none" : "block";
+  if (b) hideOvl();
+  $("msg").style.fontSize = b ? "9px" : "15px";
+  $("msg").style.padding = b ? "4px" : "14px";
 }
 
 function onError() {
@@ -86,18 +135,53 @@ function tick() {
   if (!p || !p.getDuration) return;
   var d = p.getDuration() || 0, c = p.getCurrentTime() || 0;
   if (!dragging && d > 0) $("seek").value = (c / d) * 1000;
-  if (!dragging) $("tm").textContent = fmt(c) + " / " + fmt(d);
+  if (!dragging && Date.now() > flashUntil) $("tm").textContent = fmt(c) + " / " + fmt(d);
 }
 
 function toggle() {
   if (!p || !p.getPlayerState) return;
-  var s = p.getPlayerState();
-  if (s === 1 || s === 3) p.pauseVideo(); else p.playVideo();
+  if (isPlaying()) p.pauseVideo(); else p.playVideo();
 }
 
-$("shield").addEventListener("click", toggle);
+/* ---------- 10 सेकंड आगे / पीछे ---------- */
+function flash(t) {
+  $("tm").textContent = t;
+  flashUntil = Date.now() + 900;
+}
+function skip(sec) {
+  if (!p || !p.getDuration) return;
+  var d = p.getDuration() || 0, c = p.getCurrentTime() || 0;
+  var n = Math.max(0, c + sec);
+  if (d > 0) n = Math.min(n, d - 0.5);
+  p.seekTo(n, true);
+  flash(sec > 0 ? "⏩ +10 सेकंड" : "⏪ -10 सेकंड");
+}
+$("b10").addEventListener("click", function () { skip(-10); });
+$("f10").addEventListener("click", function () { skip(10); });
+
+/* ---------- वीडियो पर टैप: एक बार = बटन दिखे/छिपे, डबल टैप = 10 सेकंड आगे/पीछे ---------- */
+var lastTap = 0, tapTimer = null;
+$("shield").addEventListener("click", function (e) {
+  var now = Date.now();
+  var r = this.getBoundingClientRect();
+  var x = e.clientX - r.left;
+  if (now - lastTap < 320) {
+    clearTimeout(tapTimer);
+    tapTimer = null;
+    lastTap = 0;
+    skip(x > r.width / 2 ? 10 : -10);
+  } else {
+    lastTap = now;
+    tapTimer = setTimeout(function () {
+      tapTimer = null;
+      if ($("big").classList.contains("on")) hideOvl(); else showOvl(false);
+    }, 320);
+  }
+});
+$("big").addEventListener("click", function () { toggle(); });
 $("pp").addEventListener("click", toggle);
 
+/* ---------- सीक बार ---------- */
 $("seek").addEventListener("input", function () {
   dragging = true;
   var d = (p && p.getDuration) ? p.getDuration() : 0;
@@ -109,6 +193,13 @@ $("seek").addEventListener("change", function () {
   dragging = false;
 });
 
+/* ---------- ब्राइटनेस ---------- */
+try { if (window.Native && Native.getBrightness) $("br").value = Native.getBrightness(); } catch (e) {}
+$("br").addEventListener("input", function () {
+  if (window.Native && Native.setBrightness) Native.setBrightness(parseInt(this.value, 10));
+});
+
+/* ---------- फुलस्क्रीन ---------- */
 $("fs").addEventListener("click", function () {
   var d = document, w = $("wrap");
   if (d.fullscreenElement || d.webkitFullscreenElement) {
