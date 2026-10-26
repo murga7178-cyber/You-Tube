@@ -7,12 +7,15 @@
 html,body{margin:0;height:100%;background:#000;overflow:hidden;-webkit-tap-highlight-color:transparent;font-family:sans-serif}
 #wrap{position:fixed;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;background:#000}
 #stage{position:relative;flex:1;min-height:0;background:#000}
-#player,#player iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
+#player,#player iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none}
 #shield{position:absolute;top:0;left:0;right:0;bottom:0;z-index:2;touch-action:manipulation}
 #big{position:absolute;z-index:3;left:50%;top:50%;width:68px;height:68px;margin:-34px 0 0 -34px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:30px;border:0;padding:0;display:flex;align-items:center;justify-content:center;opacity:0;visibility:hidden;transition:opacity .2s}
 #big.on{opacity:1;visibility:visible}
 #msg{position:absolute;z-index:4;left:16px;right:16px;top:50%;transform:translateY(-50%);text-align:center;color:#fff;font-size:15px;line-height:1.5;display:none;background:rgba(0,0,0,.8);padding:14px;border-radius:12px}
 #bar{flex:none;background:#0f0f0f;color:#fff;font-size:13px}
+body.fs #bar{display:none;position:absolute;left:0;right:0;bottom:0;z-index:5;background:linear-gradient(rgba(0,0,0,0),rgba(0,0,0,.85))}
+body.fs.ovl #bar{display:block}
+body.mini #bar{display:none !important}
 #r1,#r2{display:flex;align-items:center;gap:8px;padding:0 10px}
 #r1{height:52px}
 #r2{height:44px}
@@ -93,12 +96,14 @@ function isPlaying() {
 function showOvl(sticky) {
   if (mini) return;
   $("big").classList.add("on");
+  document.body.classList.add("ovl");
   clearTimeout(ovlTimer);
   if (!sticky && isPlaying()) ovlTimer = setTimeout(hideOvl, 3000);
 }
 function hideOvl() {
   clearTimeout(ovlTimer);
   $("big").classList.remove("on");
+  document.body.classList.remove("ovl");
 }
 
 function onState(e) {
@@ -118,7 +123,7 @@ function onState(e) {
 /* छोटे (मिनी) मोड में नीचे की बार और बटन छिपा देता है */
 function setMini(b) {
   mini = b;
-  $("bar").style.display = b ? "none" : "block";
+  document.body.classList.toggle("mini", b);
   if (b) hideOvl();
   $("msg").style.fontSize = b ? "9px" : "15px";
   $("msg").style.padding = b ? "4px" : "14px";
@@ -200,13 +205,14 @@ $("br").addEventListener("input", function () {
 });
 
 /* ---------- फुलस्क्रीन ---------- */
+/* पूरा स्क्रीन ऐप खुद संभालता है (आड़ा करके, बिना बार) */
+function setFs(b) {
+  document.body.classList.toggle("fs", b);
+  if (b) showOvl(false); else hideOvl();
+}
 $("fs").addEventListener("click", function () {
-  var d = document, w = $("wrap");
-  if (d.fullscreenElement || d.webkitFullscreenElement) {
-    (d.exitFullscreen || d.webkitExitFullscreen).call(d);
-  } else {
-    (w.requestFullscreen || w.webkitRequestFullscreen).call(w);
-  }
+  var on = !document.body.classList.contains("fs");
+  if (window.Native && Native.fullscreen) Native.fullscreen(on);
 });
 </script>
 </body>
