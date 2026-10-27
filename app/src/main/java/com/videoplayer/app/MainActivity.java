@@ -140,9 +140,8 @@ public class MainActivity extends Activity {
     // Unity Ads (सिर्फ़ वीडियो प्लेयर के नीचे बैनर)
     private static final String UNITY_GAME_ID = "800411568";
     private static final String BANNER_PLACEMENT = "BP_Banner_Android";
-    // फुलस्क्रीन करने पर आने वाला इंटरस्टिशियल (अपनी Unity डैशबोर्ड वाली Placement ID यहाँ डालें)
-    private static final String INTERSTITIAL_PLACEMENT = "BP_Interstitial_Android";
-    private static final long INTERSTITIAL_GAP_MS = 60000;   // दो विज्ञापनों के बीच कम से कम इतना अंतर
+    // रिवॉर्डेड वीडियो की Placement ID (Unity डैशबोर्ड में जो नाम हो वही यहाँ डालें)
+    private static final String REWARDED_PLACEMENT = "BP_Rewarded_Android";
     // false = असली विज्ञापन (टेस्ट के लिए true)
     private static final boolean UNITY_TEST_MODE = false;
 
@@ -151,8 +150,13 @@ public class MainActivity extends Activity {
     private FrameLayout bannerHolder;
     private LinearLayout bannerBox;
     private boolean adsReady;
-    private boolean interReady, interLoading, interShowing;
-    private long lastInter;
+    private boolean rewReady, rewLoading, rewShowing;
+    // ऐप खोलने पर एक बार रिवॉर्डेड पूरा देख लिया तो true (ऐप बंद करके खोलने पर फिर false)
+    private boolean rewardedDone;
+    // ऐप खुलने के बाद कितनी बार फुलस्क्रीन हुआ; FREE_FULLSCREENS बार मुफ़्त, उसके बाद रिवॉर्डेड ज़रूरी
+    private static final int FREE_FULLSCREENS = 5;
+    private int fsCount;
+    private TextView rewBtn;
     private final ArrayList<AdSlot> adSlots = new ArrayList<AdSlot>();
 
     // फोन आड़ा करने पर अपने-आप फुलस्क्रीन
@@ -345,61 +349,76 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------------
-    // फुलस्क्रीन पर इंटरस्टिशियल विज्ञापन
+    // रिवॉर्डेड वीडियो (ऐप खोलने पर सिर्फ़ एक बार) -> उसके बाद फुलस्क्रीन खुलता है
     // ------------------------------------------------------------------
-    private void loadInterstitial() {
-        if (!adsReady || interReady || interLoading) return;
-        interLoading = true;
+    private void loadRewarded() {
+        if (!adsReady || rewReady || rewLoading || rewardedDone) return;
+        rewLoading = true;
         try {
-            UnityAds.load(INTERSTITIAL_PLACEMENT, new IUnityAdsLoadListener() {
+            UnityAds.load(REWARDED_PLACEMENT, new IUnityAdsLoadListener() {
                 @Override
                 public void onUnityAdsAdLoaded(String placementId) {
-                    interLoading = false;
-                    interReady = true;
+                    rewLoading = false;
+                    rewReady = true;
                 }
 
                 @Override
                 public void onUnityAdsFailedToLoad(String placementId,
                         UnityAds.UnityAdsLoadError error, String message) {
-                    interLoading = false;
-                    Log.e("UnityInter", "load failed: " + message);
+                    rewLoading = false;
+                    Log.e("UnityRewarded", "load failed: " + message);
                     // 30 सेकंड बाद फिर कोशिश
                     root.postDelayed(new Runnable() {
                         @Override
                         public void run() {
-                            loadInterstitial();
+                            loadRewarded();
                         }
                     }, 30000);
                 }
             });
         } catch (Throwable t) {
-            interLoading = false;
+            rewLoading = false;
         }
     }
 
-    /** फुलस्क्रीन बटन दबा: विज्ञापन तैयार हो तो पहले नोटिस (वीडियो चलता रहता है), वरना सीधे फुलस्क्रीन */
+    /** फुलस्क्रीन (वर्गाकार) बटन: रिवॉर्डेड देख चुके हों तो सीधे फुलस्क्रीन, वरना नोटिस (वीडियो चलता रहता है) */
     private void requestFullscreen() {
-        if (mode == MODE_NONE || fsOn || interShowing) return;
-        long now = System.currentTimeMillis();
-        if (!adsReady || !interReady || now - lastInter < INTERSTITIAL_GAP_MS) {
+        if (mode == MODE_NONE || fsOn || rewShowing) return;
+        if (rewardedDone || !adsReady) {
+            setFullscreen(true);
+            return;
+        }
+        if (fsCount < FREE_FULLSCREENS) {
+            fsCount++;                 // शुरू के 5 बार बिना विज्ञापन
             setFullscreen(true);
             return;
         }
         showFsNotice();
     }
 
-    private void showInterstitial() {
-        if (interShowing) return;
-        interShowing = true;
-        interReady = false;
+    /** thenFull = true: पूरा देखने के बाद अपने-आप फुलस्क्रीन; false: सिर्फ़ ऊपर वाले बटन से देखा */
+    private void startRewarded(final boolean thenFull) {
+        if (rewShowing) return;
+        if (rewardedDone) {
+            Toast.makeText(this, "रिवॉर्डेड वीडियो पहले ही पूरा हो चुका है ✅", Toast.LENGTH_SHORT).show();
+            if (thenFull && mode != MODE_NONE && !fsOn) setFullscreen(true);
+            return;
+        }
+        if (!adsReady || !rewReady) {
+            Toast.makeText(this, "विज्ञापन तैयार हो रहा है, कुछ सेकंड बाद फिर दबाएँ", Toast.LENGTH_SHORT).show();
+            loadRewarded();
+            return;
+        }
+        rewShowing = true;
+        rewReady = false;
         try {
-            UnityAds.show(this, INTERSTITIAL_PLACEMENT, new UnityAdsShowOptions(),
+            UnityAds.show(this, REWARDED_PLACEMENT, new UnityAdsShowOptions(),
                     new IUnityAdsShowListener() {
                         @Override
                         public void onUnityAdsShowFailure(String placementId,
                                 UnityAds.UnityAdsShowError error, String message) {
-                            Log.e("UnityInter", "show failed: " + message);
-                            afterInterstitial(false, true);   // विज्ञापन न चला तो रोकें नहीं
+                            Log.e("UnityRewarded", "show failed: " + message);
+                            afterRewarded(false, true, thenFull);   // विज्ञापन न चला तो रोकें नहीं
                         }
 
                         @Override
@@ -413,26 +432,39 @@ public class MainActivity extends Activity {
                         @Override
                         public void onUnityAdsShowComplete(String placementId,
                                 UnityAds.UnityAdsShowCompletionState state) {
-                            // पूरा देखा -> फुलस्क्रीन; बीच में बंद (कट) किया -> इसी पेज पर
+                            // पूरा देखा -> रिवॉर्ड मिला; बीच में छोड़ा -> कुछ नहीं, फिर देखना होगा
                             boolean done = state == UnityAds.UnityAdsShowCompletionState.COMPLETED;
-                            afterInterstitial(done, done);
+                            afterRewarded(done, false, thenFull);
                         }
                     });
         } catch (Throwable t) {
-            afterInterstitial(false, true);
+            afterRewarded(false, true, thenFull);
         }
     }
 
-    private void afterInterstitial(final boolean counted, final boolean goFull) {
+    private void afterRewarded(final boolean done, final boolean failed, final boolean thenFull) {
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                interShowing = false;
-                if (counted) lastInter = System.currentTimeMillis();
-                loadInterstitial();                       // अगली बार के लिए
-                if (goFull && mode != MODE_NONE && !fsOn) setFullscreen(true);
+                rewShowing = false;
+                if (done) {
+                    rewardedDone = true;
+                    updateRewBtn();
+                } else {
+                    loadRewarded();                       // अगली बार के लिए
+                }
+                if ((done || failed) && thenFull && mode != MODE_NONE && !fsOn) setFullscreen(true);
             }
         });
+    }
+
+    private void updateRewBtn() {
+        if (rewBtn == null) return;
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                rewardedDone ? new int[]{0xFF1B8F3A, 0xFF2ECC71} : new int[]{0xFFFF3D00, 0xFFFF9100});
+        g.setCornerRadius(dp(20));
+        rewBtn.setBackground(g);
+        rewBtn.setText(rewardedDone ? "✅  रिवॉर्डेड पूरा" : "🎁  रिवॉर्डेड वीडियो");
     }
 
     // ---- फुलस्क्रीन से पहले का नोटिस (वीडियो के ठीक नीचे) ----
@@ -467,15 +499,16 @@ public class MainActivity extends Activity {
         fsNotice.setBackground(bg);
 
         TextView title = new TextView(this);
-        title.setText("⛶  फुल स्क्रीन में देखें");
+        title.setText("🎁  पहले रिवॉर्डेड वीडियो पूरा करें");
         title.setTextColor(Color.WHITE);
         title.setTextSize(16);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         fsNotice.addView(title);
 
         TextView msg = new TextView(this);
-        msg.setText("फुल स्क्रीन से पहले एक छोटा विज्ञापन दिखेगा। यह हमें ऐप मुफ़्त रखने में मदद करता है। "
-                + "विज्ञापन बीच में बंद किया तो आप इसी पेज पर रहेंगे। वीडियो चलता रहेगा।");
+        msg.setText("आपके मुफ़्त 5 फुल स्क्रीन पूरे हो गए। अब एक रिवॉर्डेड वीडियो पूरा देखें। "
+                + "यह ऐप खुले रहने तक सिर्फ़ एक बार देखना है, उसके बाद जितने चाहें वीडियो फुल स्क्रीन में देखें। "
+                + "तब तक आपका वीडियो चलता रहेगा।");
         msg.setTextColor(0xFFAAAAAA);
         msg.setTextSize(13);
         msg.setLineSpacing(dp(2), 1f);
@@ -486,19 +519,19 @@ public class MainActivity extends Activity {
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        TextView stay = noticeBtn("इसी पेज पर रहें", 0xFF333333, Color.WHITE);
+        TextView stay = noticeBtn("अभी नहीं", 0xFF333333, Color.WHITE);
         stay.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 hideFsNotice();
             }
         });
-        TextView go = noticeBtn("विज्ञापन देखें ▶ फुल स्क्रीन", 0xFFFF0000, Color.WHITE);
+        TextView go = noticeBtn("🎁 वीडियो देखें ▶ फुल स्क्रीन", 0xFFFF0000, Color.WHITE);
         go.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 hideFsNotice();
-                showInterstitial();
+                startRewarded(true);
             }
         });
         LinearLayout.LayoutParams l1 = new LinearLayout.LayoutParams(0,
@@ -710,8 +743,26 @@ public class MainActivity extends Activity {
         });
         top.addView(close, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
-        View spacer = new View(this);
-        top.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+        // ✕ और होम के बीच: रिवॉर्डेड वीडियो बटन
+        rewBtn = new TextView(this);
+        rewBtn.setTextColor(Color.WHITE);
+        rewBtn.setTextSize(14);
+        rewBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        rewBtn.setGravity(Gravity.CENTER);
+        rewBtn.setSingleLine(true);
+        rewBtn.setPadding(dp(14), 0, dp(14), 0);
+        rewBtn.setElevation(dp(4));
+        updateRewBtn();
+        rewBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startRewarded(false);
+            }
+        });
+        LinearLayout.LayoutParams rbLp = new LinearLayout.LayoutParams(0, dp(38), 1f);
+        rbLp.leftMargin = dp(12);
+        rbLp.rightMargin = dp(12);
+        top.addView(rewBtn, rbLp);
 
         // दाएँ कोने में होम: एक कदम पीछे -> प्लेयर नीचे छोटा, YouTube का पेज खुल जाए
         HomeIcon home = new HomeIcon(this);
@@ -1515,7 +1566,7 @@ public class MainActivity extends Activity {
                                     adsReady = true;
                                     if (card != null && mode != MODE_NONE) applyCardLayout();
                                     updateShortsBanner(true);
-                                    loadInterstitial();
+                                    loadRewarded();
                                 }
                             });
                         }
