@@ -131,6 +131,8 @@ public class MainActivity extends Activity {
     private static final int REQ_AUDIO = 77;
     // false = फोन घुमाने से अपने-आप फुलस्क्रीन नहीं होगा; सिर्फ़ ⛶ बटन से
     private static final boolean AUTO_ROTATE_FULLSCREEN = false;
+    // true = Shorts का बैनर फेल हो तो वजह स्क्रीन पर छोटे संदेश में दिखे (जाँच के बाद false कर दें)
+    private static final boolean SHORTS_DEBUG_TOAST = true;
     // true = फुलस्क्रीन से लौटते ही YouTube पेज ताज़ा लोड होता है (प्लेयर के पीछे, दिखता नहीं)
     // ताकि वह ठीक वैसा खुले जैसा शुरू में खुलता है, बाईं तरफ़ खिसका हुआ न रहे
     private static final boolean RELOAD_YT_AFTER_FULLSCREEN = true;
@@ -329,6 +331,7 @@ public class MainActivity extends Activity {
 
         forceLightCookie(cm);
         ytWeb.loadUrl(HOME);
+        root.postDelayed(urlPoll, 1000);
         handleShare(getIntent());
     }
 
@@ -374,7 +377,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** फुलस्क्रीन माँगी गई: विज्ञापन तैयार हो तो पहले वह, फिर फुलस्क्रीन; वरना सीधे फुलस्क्रीन */
+    /** फुलस्क्रीन बटन दबा: विज्ञापन तैयार हो तो पहले नोटिस (वीडियो चलता रहता है), वरना सीधे फुलस्क्रीन */
     private void requestFullscreen() {
         if (mode == MODE_NONE || fsOn || interShowing) return;
         long now = System.currentTimeMillis();
@@ -382,6 +385,11 @@ public class MainActivity extends Activity {
             setFullscreen(true);
             return;
         }
+        showFsNotice();
+    }
+
+    private void showInterstitial() {
+        if (interShowing) return;
         interShowing = true;
         interReady = false;
         try {
@@ -391,7 +399,7 @@ public class MainActivity extends Activity {
                         public void onUnityAdsShowFailure(String placementId,
                                 UnityAds.UnityAdsShowError error, String message) {
                             Log.e("UnityInter", "show failed: " + message);
-                            afterInterstitial(false);
+                            afterInterstitial(false, true);   // विज्ञापन न चला तो रोकें नहीं
                         }
 
                         @Override
@@ -405,24 +413,123 @@ public class MainActivity extends Activity {
                         @Override
                         public void onUnityAdsShowComplete(String placementId,
                                 UnityAds.UnityAdsShowCompletionState state) {
-                            afterInterstitial(true);
+                            // पूरा देखा -> फुलस्क्रीन; बीच में बंद (कट) किया -> इसी पेज पर
+                            boolean done = state == UnityAds.UnityAdsShowCompletionState.COMPLETED;
+                            afterInterstitial(done, done);
                         }
                     });
         } catch (Throwable t) {
-            afterInterstitial(false);
+            afterInterstitial(false, true);
         }
     }
 
-    private void afterInterstitial(final boolean shown) {
+    private void afterInterstitial(final boolean counted, final boolean goFull) {
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 interShowing = false;
-                if (shown) lastInter = System.currentTimeMillis();
+                if (counted) lastInter = System.currentTimeMillis();
                 loadInterstitial();                       // अगली बार के लिए
-                if (mode != MODE_NONE && !fsOn) setFullscreen(true);
+                if (goFull && mode != MODE_NONE && !fsOn) setFullscreen(true);
             }
         });
+    }
+
+    // ---- फुलस्क्रीन से पहले का नोटिस (वीडियो के ठीक नीचे) ----
+    private LinearLayout fsNotice;
+
+    private TextView noticeBtn(String text, int bg, int fg) {
+        TextView b = new TextView(this);
+        b.setText(text);
+        b.setTextColor(fg);
+        b.setTextSize(13);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setGravity(Gravity.CENTER);
+        b.setPadding(dp(8), dp(11), dp(8), dp(11));
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(10));
+        g.setColor(bg);
+        b.setBackground(g);
+        return b;
+    }
+
+    private void buildFsNotice() {
+        fsNotice = new LinearLayout(this);
+        fsNotice.setOrientation(LinearLayout.VERTICAL);
+        fsNotice.setPadding(dp(16), dp(14), dp(16), dp(14));
+        fsNotice.setClickable(true);
+        fsNotice.setElevation(dp(10));
+        fsNotice.setVisibility(View.GONE);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(16));
+        bg.setColor(0xFF1A1A1A);
+        bg.setStroke(dp(1), 0x33FFFFFF);
+        fsNotice.setBackground(bg);
+
+        TextView title = new TextView(this);
+        title.setText("⛶  फुल स्क्रीन में देखें");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(16);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        fsNotice.addView(title);
+
+        TextView msg = new TextView(this);
+        msg.setText("फुल स्क्रीन से पहले एक छोटा विज्ञापन दिखेगा। यह हमें ऐप मुफ़्त रखने में मदद करता है। "
+                + "विज्ञापन बीच में बंद किया तो आप इसी पेज पर रहेंगे। वीडियो चलता रहेगा।");
+        msg.setTextColor(0xFFAAAAAA);
+        msg.setTextSize(13);
+        msg.setLineSpacing(dp(2), 1f);
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mlp.topMargin = dp(6);
+        fsNotice.addView(msg, mlp);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        TextView stay = noticeBtn("इसी पेज पर रहें", 0xFF333333, Color.WHITE);
+        stay.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                hideFsNotice();
+            }
+        });
+        TextView go = noticeBtn("विज्ञापन देखें ▶ फुल स्क्रीन", 0xFFFF0000, Color.WHITE);
+        go.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                hideFsNotice();
+                showInterstitial();
+            }
+        });
+        LinearLayout.LayoutParams l1 = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        l1.rightMargin = dp(8);
+        row.addView(stay, l1);
+        row.addView(go, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1.4f));
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp.topMargin = dp(12);
+        fsNotice.addView(row, rlp);
+
+        playerLayer.addView(fsNotice, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
+    }
+
+    private void showFsNotice() {
+        if (fsNotice == null || fsNotice.getVisibility() == View.VISIBLE) return;
+        FrameLayout.LayoutParams cl = (FrameLayout.LayoutParams) card.getLayoutParams();
+        FrameLayout.LayoutParams nl = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
+        nl.leftMargin = dp(12);
+        nl.rightMargin = dp(12);
+        nl.topMargin = cl.topMargin + cl.height + dp(12);
+        fsNotice.setLayoutParams(nl);
+        fsNotice.setVisibility(View.VISIBLE);
+    }
+
+    private void hideFsNotice() {
+        if (fsNotice != null) fsNotice.setVisibility(View.GONE);
     }
 
     // ------------------------------------------------------------------
@@ -434,6 +541,15 @@ public class MainActivity extends Activity {
         root.addView(shortsHolder, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(SHORTS_BANNER_H), Gravity.BOTTOM));
     }
+
+    /** पक्का करने के लिए: हर ~1 सेकंड में YouTube का मौजूदा URL देखकर Shorts पहचानता है */
+    private final Runnable urlPoll = new Runnable() {
+        @Override
+        public void run() {
+            if (ytWeb != null && !ytLocked) onYtUrl(ytWeb.getUrl());
+            if (root != null) root.postDelayed(this, 1000);
+        }
+    };
 
     private static boolean isShortsPage(String url) {
         if (url == null) return false;
@@ -482,6 +598,8 @@ public class MainActivity extends Activity {
             if (shortsSlot == null) {
                 shortsSlot = makeSlot();
                 if (shortsSlot != null) {
+                    shortsSlot.toastErr = SHORTS_DEBUG_TOAST;
+                    shortsSlot.retryMs = 10000;
                     shortsSlot.onChanged = new Runnable() {
                         @Override
                         public void run() {
@@ -731,6 +849,7 @@ public class MainActivity extends Activity {
 
         playerLayer.addView(miniBox, new FrameLayout.LayoutParams(
                 dp(MINI_W), dp(MINI_CARD_H), Gravity.TOP | Gravity.LEFT));
+        buildFsNotice();
 
         root.addView(playerLayer, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -740,7 +859,13 @@ public class MainActivity extends Activity {
         ps.setDomStorageEnabled(true);
         ps.setMediaPlaybackRequiresUserGesture(false);
         pWeb.addJavascriptInterface(new NativeBridge(), "Native");
-        pWeb.setWebViewClient(new WebViewClient());
+        pWeb.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                // नया वीडियो लोड होने पर छोटा/बड़ा मोड फिर से लागू (छोटी विंडो में बार न दिखे)
+                view.evaluateJavascript("window.setMini&&setMini(" + (mode == MODE_MINI) + ")", null);
+            }
+        });
         pWeb.setWebChromeClient(new WebChromeClient() {
             @Override
             @SuppressWarnings("deprecation")
@@ -797,11 +922,13 @@ public class MainActivity extends Activity {
         spinner.postDelayed(hideSpinner, 8000);
         miniPp.setText("❚❚");
         pWeb.loadDataWithBaseURL("https://videoplayer.app/", page, "text/html", "utf-8", null);
-        setMode(MODE_FULL);
+        // छोटी विंडो खुली हो तो नया वीडियो उसी में चले; वरना बड़ा प्लेयर
+        if (mode != MODE_MINI) setMode(MODE_FULL);
     }
 
     private void setMode(int m) {
         mode = m;
+        hideFsNotice();
         if (m == MODE_NONE) {
             playerLayer.setVisibility(View.GONE);
         } else {
@@ -842,6 +969,7 @@ public class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     private void setFullscreen(boolean on) {
         if (mode == MODE_NONE) return;
+        hideFsNotice();
         fsOn = on;
         if (on) {
             root.removeCallbacks(unlockRun);
@@ -1165,7 +1293,10 @@ public class MainActivity extends Activity {
         Matcher m = Pattern.compile("https?://\\S+").matcher(text);
         if (m.find()) {
             String url = m.group();
-            if (VideoLink.parse(url) != null) openPlayer(url);
+            if (VideoLink.parse(url) != null) {
+                if (mode == MODE_MINI) setMode(MODE_FULL);   // शेयर किया लिंक बड़े प्लेयर में
+                openPlayer(url);
+            }
         }
     }
 
@@ -1273,6 +1404,8 @@ public class MainActivity extends Activity {
         boolean ok, loading;
         int tries;
         Runnable onChanged;   // लोड / फेल होने पर (UI थ्रेड पर) चलता है
+        boolean toastErr;     // फेल होने की वजह स्क्रीन पर दिखाओ (जाँच के लिए)
+        long retryMs = 30000;
 
         void load() {
             if (view == null || ok || loading || !adsReady) return;
@@ -1312,6 +1445,16 @@ public class MainActivity extends Activity {
                 slot.ok = false;
                 slot.loading = false;
                 if (slot.onChanged != null) runOnUiThread(slot.onChanged);
+                if (slot.toastErr) {
+                    final String why = errorInfo == null ? "?" : String.valueOf(errorInfo.errorMessage);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            Toast.makeText(MainActivity.this, "Shorts बैनर नहीं आया: " + why,
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
                 Log.e("UnityBanner", "banner failed: "
                         + (errorInfo == null ? "?" : String.valueOf(errorInfo.errorMessage)));
                 if (slot.tries < 8 && slot.view != null) {
@@ -1321,7 +1464,7 @@ public class MainActivity extends Activity {
                         public void run() {
                             slot.load();
                         }
-                    }, 30000);
+                    }, slot.retryMs);
                 }
             }
 
