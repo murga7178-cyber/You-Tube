@@ -50,6 +50,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
 import com.unity3d.ads.IUnityAdsInitializationListener;
+import com.unity3d.ads.IUnityAdsLoadListener;
+import com.unity3d.ads.IUnityAdsShowListener;
+import com.unity3d.ads.UnityAdsShowOptions;
 import com.unity3d.ads.UnityAds;
 import com.unity3d.services.banners.BannerErrorInfo;
 import com.unity3d.services.banners.BannerView;
@@ -70,9 +73,9 @@ public class MainActivity extends Activity {
     private static final String HOME = "https://m.youtube.com";
 
     private static final int MODE_NONE = 0, MODE_FULL = 1, MODE_MINI = 2;
-    private static final int MINI_W = 128;  // dp, छोटे वीडियो की चौड़ाई
-    private static final int MINI_CARD_H = 72; // dp
-    private static final int MINI_H = 88;   // dp, पूरी मिनी पट्टी
+    private static final int MINI_W = 180;  // dp, तैरती छोटी विंडो की चौड़ाई
+    private static final int MINI_CARD_H = 101; // dp, उसकी ऊँचाई (16:9)
+    private static final int SHORTS_BANNER_H = 50; // dp, Shorts के सबसे नीचे वाला बैनर
     private static final int TOP_H = 56;    // dp, बड़े प्लेयर की ऊपर वाली पट्टी
     private static final int BAR_DP = 52;   // dp, player.html की नीचे की बार (1 पंक्ति)
     private static final int MAX_BANNERS = 4; // नीचे ज़्यादा से ज़्यादा इतने बैनर
@@ -122,13 +125,22 @@ public class MainActivity extends Activity {
             + "vm.setAttribute('content','width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no');"
             + "document.documentElement.style.overflowX='hidden';"
             + "document.body&&(document.body.style.overflowX='hidden');"
+            + "document.documentElement.scrollLeft=0;document.body&&(document.body.scrollLeft=0);"
             + "if(window.scrollX!==0)window.scrollTo(0,window.scrollY);}catch(x){}";
 
     private static final int REQ_AUDIO = 77;
+    // false = फोन घुमाने से अपने-आप फुलस्क्रीन नहीं होगा; सिर्फ़ ⛶ बटन से
+    private static final boolean AUTO_ROTATE_FULLSCREEN = false;
+    // true = फुलस्क्रीन से लौटते ही YouTube पेज ताज़ा लोड होता है (प्लेयर के पीछे, दिखता नहीं)
+    // ताकि वह ठीक वैसा खुले जैसा शुरू में खुलता है, बाईं तरफ़ खिसका हुआ न रहे
+    private static final boolean RELOAD_YT_AFTER_FULLSCREEN = true;
 
     // Unity Ads (सिर्फ़ वीडियो प्लेयर के नीचे बैनर)
     private static final String UNITY_GAME_ID = "800411568";
     private static final String BANNER_PLACEMENT = "BP_Banner_Android";
+    // फुलस्क्रीन करने पर आने वाला इंटरस्टिशियल (अपनी Unity डैशबोर्ड वाली Placement ID यहाँ डालें)
+    private static final String INTERSTITIAL_PLACEMENT = "BP_Interstitial_Android";
+    private static final long INTERSTITIAL_GAP_MS = 60000;   // दो विज्ञापनों के बीच कम से कम इतना अंतर
     // false = असली विज्ञापन (टेस्ट के लिए true)
     private static final boolean UNITY_TEST_MODE = false;
 
@@ -137,6 +149,8 @@ public class MainActivity extends Activity {
     private FrameLayout bannerHolder;
     private LinearLayout bannerBox;
     private boolean adsReady;
+    private boolean interReady, interLoading, interShowing;
+    private long lastInter;
     private final ArrayList<AdSlot> adSlots = new ArrayList<AdSlot>();
 
     // फोन आड़ा करने पर अपने-आप फुलस्क्रीन
@@ -148,7 +162,7 @@ public class MainActivity extends Activity {
             rotEnterPending = false;
             if (lastLand && !rotSuppress && mode == MODE_FULL && !fsOn && customView == null) {
                 fsByRotation = true;
-                setFullscreen(true);
+                requestFullscreen();
             }
         }
     };
@@ -180,9 +194,15 @@ public class MainActivity extends Activity {
     private FrameLayout playerLayer;
     private FrameLayout fullBg;
     private FrameLayout card;
-    private LinearLayout miniRow;
-    private View miniTap;
+    private FrameLayout miniBox;      // तैरती छोटी विंडो का टच-क्षेत्र + बटन
     private TextView miniPp;
+    private float miniX, miniY;       // छोटी विंडो की जगह (px, ऊपर-बाएँ कोना)
+    private boolean miniPlaced;
+
+    // Shorts पेज पर सबसे नीचे एक बैनर
+    private FrameLayout shortsHolder;
+    private AdSlot shortsSlot;
+    private boolean onShorts;
     private WebView pWeb;
     private ProgressBar spinner;
 
@@ -217,8 +237,19 @@ public class MainActivity extends Activity {
         root.addView(ytWeb, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        buildShortsBanner();
         buildPlayerLayer();
         setContentView(root);
+        root.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+            @Override
+            public void onLayoutChange(View v, int l, int t, int r, int b,
+                                       int oldL, int oldT, int oldR, int oldB) {
+                if (mode == MODE_MINI && !fsOn
+                        && (r - l != oldR - oldL || b - t != oldB - oldT)) {
+                    placeMini();
+                }
+            }
+        });
         startOrientationWatch();
         initAds();
         applyChrome();
@@ -280,11 +311,19 @@ public class MainActivity extends Activity {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 inject(view);
+                onYtUrl(url);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 inject(view);
+                onYtUrl(url);
+            }
+
+            /** YouTube (m.) पेज बदले बिना भी URL बदलता है (Shorts में ऊपर स्वाइप) -> यहीं पकड़ में आता है */
+            @Override
+            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+                onYtUrl(url);
             }
         });
 
@@ -300,6 +339,196 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    // ------------------------------------------------------------------
+    // फुलस्क्रीन पर इंटरस्टिशियल विज्ञापन
+    // ------------------------------------------------------------------
+    private void loadInterstitial() {
+        if (!adsReady || interReady || interLoading) return;
+        interLoading = true;
+        try {
+            UnityAds.load(INTERSTITIAL_PLACEMENT, new IUnityAdsLoadListener() {
+                @Override
+                public void onUnityAdsAdLoaded(String placementId) {
+                    interLoading = false;
+                    interReady = true;
+                }
+
+                @Override
+                public void onUnityAdsFailedToLoad(String placementId,
+                        UnityAds.UnityAdsLoadError error, String message) {
+                    interLoading = false;
+                    Log.e("UnityInter", "load failed: " + message);
+                    // 30 सेकंड बाद फिर कोशिश
+                    root.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            loadInterstitial();
+                        }
+                    }, 30000);
+                }
+            });
+        } catch (Throwable t) {
+            interLoading = false;
+        }
+    }
+
+    /** फुलस्क्रीन माँगी गई: विज्ञापन तैयार हो तो पहले वह, फिर फुलस्क्रीन; वरना सीधे फुलस्क्रीन */
+    private void requestFullscreen() {
+        if (mode == MODE_NONE || fsOn || interShowing) return;
+        long now = System.currentTimeMillis();
+        if (!adsReady || !interReady || now - lastInter < INTERSTITIAL_GAP_MS) {
+            setFullscreen(true);
+            return;
+        }
+        interShowing = true;
+        interReady = false;
+        try {
+            UnityAds.show(this, INTERSTITIAL_PLACEMENT, new UnityAdsShowOptions(),
+                    new IUnityAdsShowListener() {
+                        @Override
+                        public void onUnityAdsShowFailure(String placementId,
+                                UnityAds.UnityAdsShowError error, String message) {
+                            Log.e("UnityInter", "show failed: " + message);
+                            afterInterstitial(false);
+                        }
+
+                        @Override
+                        public void onUnityAdsShowStart(String placementId) {
+                        }
+
+                        @Override
+                        public void onUnityAdsShowClick(String placementId) {
+                        }
+
+                        @Override
+                        public void onUnityAdsShowComplete(String placementId,
+                                UnityAds.UnityAdsShowCompletionState state) {
+                            afterInterstitial(true);
+                        }
+                    });
+        } catch (Throwable t) {
+            afterInterstitial(false);
+        }
+    }
+
+    private void afterInterstitial(final boolean shown) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                interShowing = false;
+                if (shown) lastInter = System.currentTimeMillis();
+                loadInterstitial();                       // अगली बार के लिए
+                if (mode != MODE_NONE && !fsOn) setFullscreen(true);
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Shorts: सबसे नीचे एक बैनर
+    // ------------------------------------------------------------------
+    private void buildShortsBanner() {
+        shortsHolder = new FrameLayout(this);
+        shortsHolder.setVisibility(View.GONE);
+        root.addView(shortsHolder, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(SHORTS_BANNER_H), Gravity.BOTTOM));
+    }
+
+    private static boolean isShortsPage(String url) {
+        if (url == null) return false;
+        try {
+            Uri u = Uri.parse(url);
+            String h = u.getHost(), p = u.getPath();
+            return h != null && h.endsWith("youtube.com") && p != null
+                    && (p.equals("/shorts") || p.startsWith("/shorts/"));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void onYtUrl(String url) {
+        boolean s = isShortsPage(url);
+        if (s == onShorts) return;
+        onShorts = s;
+        updateShortsBanner(true);
+    }
+
+    /** बैनर लोड हो चुका हो तभी YouTube पेज के नीचे जगह छोड़ते हैं (वरना खाली पट्टी दिखेगी) */
+    private boolean shortsBannerShown() {
+        return onShorts && adsReady && shortsSlot != null && shortsSlot.ok;
+    }
+
+    private int ytBottomMargin() {
+        return shortsBannerShown() ? dp(SHORTS_BANNER_H) : 0;
+    }
+
+    private void applyYtMargin() {
+        if (ytWeb == null || ytLocked) return;
+        ViewGroup.LayoutParams lp = ytWeb.getLayoutParams();
+        if (!(lp instanceof FrameLayout.LayoutParams)) return;
+        FrameLayout.LayoutParams yl = (FrameLayout.LayoutParams) lp;
+        int b = ytBottomMargin();
+        if (yl.bottomMargin == b) return;
+        yl.bottomMargin = b;
+        ytWeb.setLayoutParams(yl);
+    }
+
+    private void updateShortsBanner(boolean tryLoad) {
+        if (shortsHolder == null) return;
+        if (!onShorts || !adsReady) {
+            shortsHolder.setVisibility(View.GONE);
+        } else {
+            if (shortsSlot == null) {
+                shortsSlot = makeSlot();
+                if (shortsSlot != null) {
+                    shortsSlot.onChanged = new Runnable() {
+                        @Override
+                        public void run() {
+                            updateShortsBanner(false);
+                        }
+                    };
+                    shortsHolder.addView(shortsSlot.view, new FrameLayout.LayoutParams(
+                            dp(320), dp(50), Gravity.CENTER));
+                }
+            }
+            shortsHolder.setBackgroundColor(shortsBannerShown() ? Color.WHITE : Color.TRANSPARENT);
+            shortsHolder.setVisibility(View.VISIBLE);
+            if (tryLoad && shortsSlot != null) shortsSlot.load();
+        }
+        applyYtMargin();
+        if (mode == MODE_MINI) placeMini();
+    }
+
+    // ------------------------------------------------------------------
+    // छोटी तैरती विंडो: जहाँ छोड़ो वहीं रहती है
+    // ------------------------------------------------------------------
+    private void placeMini() {
+        if (card == null || miniBox == null) return;
+        int rw = root.getWidth() > 0 ? root.getWidth()
+                : getResources().getDisplayMetrics().widthPixels;
+        int rh = root.getHeight() > 0 ? root.getHeight()
+                : getResources().getDisplayMetrics().heightPixels;
+        int w = dp(MINI_W), h = dp(MINI_CARD_H);
+        if (!miniPlaced) {                      // पहली बार: नीचे दाएँ कोने में
+            miniX = rw - w - dp(12);
+            miniY = rh - h - dp(24);
+            miniPlaced = true;
+        }
+        int reserve = shortsBannerShown() ? dp(SHORTS_BANNER_H) : 0;   // बैनर के ऊपर न चढ़े
+        miniX = Math.max(0f, Math.min(rw - w, miniX));
+        miniY = Math.max(0f, Math.min(rh - h - reserve, miniY));
+        card.setTranslationX(miniX);
+        card.setTranslationY(miniY);
+        miniBox.setTranslationX(miniX);
+        miniBox.setTranslationY(miniY);
+    }
+
+    private GradientDrawable roundBg(int color) {
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.OVAL);
+        g.setColor(color);
+        return g;
     }
 
     /** YouTube की अपनी थीम-सेटिंग (PREF कुकी) को लाइट पर कर देता है */
@@ -385,58 +614,6 @@ public class MainActivity extends Activity {
         playerLayer.addView(fullBg, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // ---- छोटा (मिनी) मोड: गहरी पट्टी, नाम, ⏸/▶ और ✕ ----
-        miniRow = new LinearLayout(this);
-        miniRow.setOrientation(LinearLayout.HORIZONTAL);
-        miniRow.setGravity(Gravity.CENTER_VERTICAL);
-        miniRow.setBackgroundColor(0xFF0F0F0F);
-        miniRow.setPadding(dp(8) + dp(MINI_W) + dp(12), 0, dp(8), 0);
-        miniRow.setVisibility(View.GONE);
-        miniRow.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                setMode(MODE_FULL);
-            }
-        });
-
-        TextView miniTitle = new TextView(this);
-        miniTitle.setText("वीडियो चल रहा है");
-        miniTitle.setTextColor(Color.WHITE);
-        miniTitle.setTextSize(14);
-        miniTitle.setSingleLine(true);
-        miniTitle.setEllipsize(TextUtils.TruncateAt.END);
-        miniRow.addView(miniTitle, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        miniPp = new TextView(this);
-        miniPp.setText("❚❚");
-        miniPp.setTextColor(Color.WHITE);
-        miniPp.setTextSize(22);
-        miniPp.setGravity(Gravity.CENTER);
-        miniPp.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                pWeb.evaluateJavascript("toggle()", null);
-            }
-        });
-        miniRow.addView(miniPp, new LinearLayout.LayoutParams(dp(44), dp(44)));
-
-        TextView miniClose = new TextView(this);
-        miniClose.setText("✕");
-        miniClose.setTextColor(Color.WHITE);
-        miniClose.setTextSize(18);
-        miniClose.setGravity(Gravity.CENTER);
-        miniClose.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                stopPlayer();
-            }
-        });
-        miniRow.addView(miniClose, new LinearLayout.LayoutParams(dp(44), dp(44)));
-
-        playerLayer.addView(miniRow, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
         // ---- वीडियो का कार्ड (दोनों मोड में यही चलता है, सिर्फ़ साइज़ बदलता है) ----
         corner = dp(16);
         card = new FrameLayout(this);
@@ -474,16 +651,86 @@ public class MainActivity extends Activity {
         bannerHolder.addView(bannerBox, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // मिनी में वीडियो पर टैप -> फिर बड़ा
-        miniTap = new View(this);
-        miniTap.setVisibility(View.GONE);
-        miniTap.setOnClickListener(new View.OnClickListener() {
+        // ---- छोटी तैरती विंडो: उँगली से कहीं भी खिसकाओ, टैप करो तो बड़ा ----
+        miniBox = new FrameLayout(this);
+        miniBox.setVisibility(View.GONE);
+        miniBox.setElevation(dp(14));   // card (8dp) से ऊपर, ताकि टच पहले इसी को मिले
+        miniBox.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 setMode(MODE_FULL);
             }
         });
-        playerLayer.addView(miniTap);
+        miniBox.setOnTouchListener(new View.OnTouchListener() {
+            private float downX, downY, startX, startY;
+            private boolean moved;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downX = e.getRawX();
+                        downY = e.getRawY();
+                        startX = miniX;
+                        startY = miniY;
+                        moved = false;
+                        return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
+                        int slop = ViewConfiguration.get(MainActivity.this).getScaledTouchSlop();
+                        if (!moved && Math.hypot(dx, dy) > slop) moved = true;
+                        if (moved) {
+                            miniX = startX + dx;
+                            miniY = startY + dy;
+                            placeMini();
+                        }
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                        if (!moved) v.performClick();
+                        return true;
+                    default:
+                        return true;
+                }
+            }
+        });
+
+        miniPp = new TextView(this);
+        miniPp.setText("❚❚");
+        miniPp.setTextColor(Color.WHITE);
+        miniPp.setTextSize(13);
+        miniPp.setGravity(Gravity.CENTER);
+        miniPp.setBackground(roundBg(0x99000000));
+        miniPp.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pWeb.evaluateJavascript("toggle()", null);
+            }
+        });
+        FrameLayout.LayoutParams ppLp = new FrameLayout.LayoutParams(
+                dp(30), dp(30), Gravity.BOTTOM | Gravity.LEFT);
+        ppLp.setMargins(dp(6), 0, 0, dp(6));
+        miniBox.addView(miniPp, ppLp);
+
+        TextView miniClose = new TextView(this);
+        miniClose.setText("✕");
+        miniClose.setTextColor(Color.WHITE);
+        miniClose.setTextSize(14);
+        miniClose.setGravity(Gravity.CENTER);
+        miniClose.setBackground(roundBg(0x99000000));
+        miniClose.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                stopPlayer();
+            }
+        });
+        FrameLayout.LayoutParams clLp = new FrameLayout.LayoutParams(
+                dp(30), dp(30), Gravity.TOP | Gravity.RIGHT);
+        clLp.setMargins(0, dp(6), dp(6), 0);
+        miniBox.addView(miniClose, clLp);
+
+        playerLayer.addView(miniBox, new FrameLayout.LayoutParams(
+                dp(MINI_W), dp(MINI_CARD_H), Gravity.TOP | Gravity.LEFT));
 
         root.addView(playerLayer, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -504,7 +751,7 @@ public class MainActivity extends Activity {
                 }
                 customView = view;
                 customCallback = callback;
-                ytWeb.removeCallbacks(unlockRun);
+                root.removeCallbacks(unlockRun);
                 lockYt();
                 root.addView(view, new FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -523,8 +770,8 @@ public class MainActivity extends Activity {
                 customView = null;
                 if (customCallback != null) customCallback.onCustomViewHidden();
                 customCallback = null;
-                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-                ytWeb.postDelayed(unlockRun, 1500);
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+                root.postDelayed(unlockRun, 1500);
                 applyChrome();
             }
         });
@@ -559,26 +806,22 @@ public class MainActivity extends Activity {
             playerLayer.setVisibility(View.GONE);
         } else {
             playerLayer.setVisibility(View.VISIBLE);
-            FrameLayout.LayoutParams pl = (m == MODE_MINI)
-                    ? new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(MINI_H), Gravity.BOTTOM)
-                    : new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-            playerLayer.setLayoutParams(pl);
+            // परत दोनों मोड में पूरी स्क्रीन की; छोटे मोड में खाली जगह का टच नीचे YouTube पेज को जाता है
+            playerLayer.setLayoutParams(new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             fullBg.setVisibility(m == MODE_FULL ? View.VISIBLE : View.GONE);
-            miniRow.setVisibility(m == MODE_MINI ? View.VISIBLE : View.GONE);
-            miniTap.setVisibility(m == MODE_MINI ? View.VISIBLE : View.GONE);
-            corner = (m == MODE_MINI) ? dp(8) : dp(16);
+            miniBox.setVisibility(m == MODE_MINI ? View.VISIBLE : View.GONE);
+            corner = (m == MODE_MINI) ? dp(12) : dp(16);
             card.invalidateOutline();
             applyCardLayout();
             pWeb.evaluateJavascript("setMini(" + (m == MODE_MINI) + ")", null);
         }
-        // मिनी में नीचे की जगह छोड़ दो, ताकि YouTube का पेज पट्टी के पीछे न दबे
-        FrameLayout.LayoutParams yl = (FrameLayout.LayoutParams) ytWeb.getLayoutParams();
-        yl.bottomMargin = (m == MODE_MINI) ? dp(MINI_H) : 0;
-        ytWeb.setLayoutParams(yl);
+        // छोटी विंडो अब पेज के ऊपर तैरती है, नीचे जगह नहीं छोड़नी; सिर्फ़ Shorts बैनर की जगह
+        applyYtMargin();
         if (!fsOn && customView == null) {
             setRequestedOrientation(m == MODE_FULL
                     ? ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                    : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                    : ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         }
         applyChrome();
         relayoutYt();
@@ -601,7 +844,7 @@ public class MainActivity extends Activity {
         if (mode == MODE_NONE) return;
         fsOn = on;
         if (on) {
-            ytWeb.removeCallbacks(unlockRun);
+            root.removeCallbacks(unlockRun);
             lockYt();
         }
         WindowManager.LayoutParams a = getWindow().getAttributes();
@@ -624,8 +867,8 @@ public class MainActivity extends Activity {
             getWindow().setAttributes(a);
             setRequestedOrientation(mode == MODE_FULL
                     ? ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                    : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-            ytWeb.postDelayed(unlockRun, 1500);   // पक्का: 1.5 सेकंड में साइज़ खोल दो
+                    : ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+            root.postDelayed(unlockRun, 1500);   // पक्का: 1.5 सेकंड में साइज़ खोल दो
         }
         fullBg.setVisibility((!on && mode == MODE_FULL) ? View.VISIBLE : View.GONE);
         corner = on ? 0 : dp(16);
@@ -730,6 +973,12 @@ public class MainActivity extends Activity {
             dragCand = false;
             if (!was) return false;
             if (a == MotionEvent.ACTION_UP && dragDy > dp(110)) {
+                // जहाँ उँगली छोड़ी, वहीं छोटी विंडो बने
+                int rw = root.getWidth() > 0 ? root.getWidth()
+                        : getResources().getDisplayMetrics().widthPixels;
+                miniX = (rw - dp(MINI_W)) / 2f;
+                miniY = dp(TOP_H) + dragDy * 0.9f;
+                miniPlaced = true;
                 resetDragViews();
                 setMode(MODE_MINI);
             } else {
@@ -771,9 +1020,7 @@ public class MainActivity extends Activity {
             lp = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         } else if (mode == MODE_MINI) {
-            lp = new FrameLayout.LayoutParams(dp(MINI_W), dp(MINI_CARD_H));
-            lp.gravity = Gravity.CENTER_VERTICAL | Gravity.LEFT;
-            lp.leftMargin = dp(8);
+            lp = new FrameLayout.LayoutParams(dp(MINI_W), dp(MINI_CARD_H), Gravity.TOP | Gravity.LEFT);
         } else if (getResources().getConfiguration().orientation
                 == Configuration.ORIENTATION_LANDSCAPE) {
             lp = new FrameLayout.LayoutParams(
@@ -786,7 +1033,12 @@ public class MainActivity extends Activity {
             lp.gravity = Gravity.TOP;
         }
         card.setLayoutParams(lp);
-        miniTap.setLayoutParams(new FrameLayout.LayoutParams(lp));
+        if (mode == MODE_MINI && !fsOn) {
+            placeMini();
+        } else if (!dragging) {
+            card.setTranslationX(0f);
+            card.setTranslationY(0f);
+        }
 
         // बैनर: सिर्फ़ बड़े प्लेयर में, पोर्ट्रेट में, सीक बार वाले कार्ड के ठीक नीचे
         boolean portrait = getResources().getConfiguration().orientation
@@ -855,6 +1107,7 @@ public class MainActivity extends Activity {
                 boolean land = (deg >= 60 && deg <= 120) || (deg >= 240 && deg <= 300);
                 boolean port = deg <= 30 || deg >= 330;
                 lastLand = land;
+                if (!AUTO_ROTATE_FULLSCREEN) return;
                 if (land) {
                     if (rotExitPending) {
                         root.removeCallbacks(rotExit);
@@ -952,7 +1205,7 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     fsByRotation = false;
-                    setFullscreen(on);
+                    if (on) requestFullscreen(); else setFullscreen(false);
                 }
             });
         }
@@ -1019,6 +1272,7 @@ public class MainActivity extends Activity {
         BannerView view;
         boolean ok, loading;
         int tries;
+        Runnable onChanged;   // लोड / फेल होने पर (UI थ्रेड पर) चलता है
 
         void load() {
             if (view == null || ok || loading || !adsReady) return;
@@ -1043,6 +1297,7 @@ public class MainActivity extends Activity {
             public void onBannerLoaded(BannerView bannerAdView) {
                 slot.ok = true;
                 slot.loading = false;
+                if (slot.onChanged != null) runOnUiThread(slot.onChanged);
             }
 
             public void onBannerShown(BannerView bannerAdView) {
@@ -1056,6 +1311,7 @@ public class MainActivity extends Activity {
             public void onBannerFailedToLoad(BannerView bannerAdView, BannerErrorInfo errorInfo) {
                 slot.ok = false;
                 slot.loading = false;
+                if (slot.onChanged != null) runOnUiThread(slot.onChanged);
                 Log.e("UnityBanner", "banner failed: "
                         + (errorInfo == null ? "?" : String.valueOf(errorInfo.errorMessage)));
                 if (slot.tries < 8 && slot.view != null) {
@@ -1115,6 +1371,8 @@ public class MainActivity extends Activity {
                                 public void run() {
                                     adsReady = true;
                                     if (card != null && mode != MODE_NONE) applyCardLayout();
+                                    updateShortsBanner(true);
+                                    loadInterstitial();
                                 }
                             });
                         }
@@ -1136,34 +1394,32 @@ public class MainActivity extends Activity {
         view.evaluateJavascript(VIEW_FIX, null);
     }
 
-    /** वीडियो देखकर / घुमाकर लौटने पर YouTube का पेज दोबारा पूरी चौड़ाई में, बाईं ओर से बिठाता है */
-    /** फुलस्क्रीन के दौरान पीछे का YouTube पेज आड़ा न हो जाए: उसका साइज़ जैसा था वैसा ही पक्का कर देता है */
+    /**
+     * फुलस्क्रीन (आड़ा) के दौरान YouTube पेज को स्क्रीन से अलग (detach) रखते हैं, ताकि उसे घुमाव का
+     * पता ही न चले। वापस सीधा होने पर वही पेज उसी साइज़ में फिर जोड़ देते हैं -> बाईं तरफ़ से कटना नहीं।
+     */
     private void lockYt() {
         if (ytWeb == null || ytLocked) return;
-        int w = ytWeb.getWidth(), h = ytWeb.getHeight();
-        if (w <= 0 || h <= 0) return;
-        FrameLayout.LayoutParams yl = (FrameLayout.LayoutParams) ytWeb.getLayoutParams();
-        yl.width = w;
-        yl.height = h;
-        yl.bottomMargin = 0;
-        yl.gravity = Gravity.TOP | Gravity.LEFT;
-        ytWeb.setLayoutParams(yl);
         ytLocked = true;
+        root.removeView(ytWeb);
     }
 
     private void unlockYt() {
         if (ytWeb == null || !ytLocked) return;
         ytLocked = false;
-        FrameLayout.LayoutParams yl = (FrameLayout.LayoutParams) ytWeb.getLayoutParams();
-        yl.width = ViewGroup.LayoutParams.MATCH_PARENT;
-        yl.height = ViewGroup.LayoutParams.MATCH_PARENT;
-        yl.bottomMargin = (mode == MODE_MINI) ? dp(MINI_H) : 0;
-        ytWeb.setLayoutParams(yl);
+        FrameLayout.LayoutParams yl = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        yl.bottomMargin = ytBottomMargin();
+        root.addView(ytWeb, 0, yl);
+        if (RELOAD_YT_AFTER_FULLSCREEN) {
+            String u = ytWeb.getUrl();
+            if (u != null && u.startsWith("http")) ytWeb.reload();
+        }
         relayoutYt();
     }
 
     private void healYt() {
-        if (ytWeb == null) return;
+        if (ytWeb == null || ytLocked) return;
         ytWeb.requestLayout();
         ytWeb.scrollTo(0, ytWeb.getScrollY());          // आड़ा खिसकाव हटाओ
         ytWeb.evaluateJavascript(VIEW_FIX, null);       // ज़ूम 1 पर, किनारे बराबर
@@ -1172,11 +1428,11 @@ public class MainActivity extends Activity {
     }
 
     private void relayoutYt() {
-        if (ytWeb == null) return;
+        if (ytWeb == null || ytLocked) return;
         healYt();
         int[] delays = {150, 400, 800, 1500};
         for (int i = 0; i < delays.length; i++) {
-            ytWeb.postDelayed(new Runnable() {
+            root.postDelayed(new Runnable() {
                 @Override
                 public void run() {
                     healYt();
@@ -1354,6 +1610,10 @@ public class MainActivity extends Activity {
             }
         }
         adSlots.clear();
+        try {
+            if (shortsSlot != null && shortsSlot.view != null) shortsSlot.view.destroy();
+        } catch (Throwable ignored) {
+        }
         if (recognizer != null) {
             recognizer.destroy();
             recognizer = null;
