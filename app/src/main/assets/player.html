@@ -10,7 +10,7 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;-webkit-tap-highl
 #frame{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;z-index:1}
 #player,#player iframe{position:absolute;left:0;top:-120px;width:100%;height:calc(100% + 240px);border:0;pointer-events:none}
 #shield{position:absolute;left:0;top:0;width:100%;height:100%;z-index:2;touch-action:none}
-#big{position:absolute;z-index:3;left:50%;top:50%;width:68px;height:68px;margin:-34px 0 0 -34px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:30px;border:0;padding:0;display:flex;align-items:center;justify-content:center;opacity:0;visibility:hidden;transition:opacity .2s}
+#big{position:absolute;z-index:3;left:50%;top:50%;width:88px;height:88px;margin:-44px 0 0 -44px;border-radius:50%;background:#0b0b0b;color:#fff;font-size:36px;border:0;padding:0;display:flex;align-items:center;justify-content:center;opacity:0;visibility:hidden;transition:opacity .2s}
 #big.on{opacity:1;visibility:visible}
 #msg{position:absolute;z-index:4;left:16px;right:16px;top:50%;transform:translateY(-50%);text-align:center;color:#fff;font-size:15px;line-height:1.5;display:none;background:rgba(0,0,0,.8);padding:14px;border-radius:12px}
 #bar{flex:none;background:#0f0f0f;color:#fff;font-size:13px}
@@ -23,9 +23,14 @@ body.mini #bar{display:none !important}
 #pp,#fs{background:none;border:0;color:#fff;font-size:22px;width:38px;height:38px;padding:0;flex:none}
 #seek,#br{flex:1;min-width:0;height:30px;margin:0}
 #seek{accent-color:#f00}
-#bri{position:absolute;z-index:7;left:50%;top:16px;transform:translateX(-50%);background:rgba(0,0,0,.7);color:#fff;font-size:15px;padding:6px 14px;border-radius:16px;display:none}
+#bri{position:absolute;z-index:7;right:18px;top:50%;transform:translateY(-50%);width:46px;padding:10px 0;border-radius:23px;background:rgba(0,0,0,.65);color:#fff;display:none;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+#bri.hint{opacity:.6}
+#bsun{font-size:20px;line-height:1}
+#btrack{position:relative;width:6px;height:120px;border-radius:3px;background:rgba(255,255,255,.3);overflow:hidden}
+#bfill{position:absolute;left:0;right:0;bottom:0;height:50%;background:#fff;border-radius:3px}
+#bpct{font-size:12px}
 #brw{position:absolute;right:12px;top:50%;width:40px;height:180px;margin-top:-90px;z-index:6;display:none}
-body.fs.ovl #brw{display:block}
+#brw{display:none !important}
 #br{position:absolute;width:160px;height:30px;left:-60px;top:75px;margin:0;transform:rotate(-90deg);accent-color:#fff}
 .t{flex:none;min-width:92px;text-align:center}
 .sk{background:#272727;border:0;color:#fff;border-radius:16px;height:32px;padding:0 12px;font-size:13px;flex:none}
@@ -39,7 +44,7 @@ body.fs.ovl #brw{display:block}
     <div id="shield"></div>
     <button id="big"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M8 5v14l11-7z"/></svg></button>
     <div id="msg"></div>
-    <div id="bri"></div>
+    <div id="bri"><div id="bsun">\u2600</div><div id="btrack"><div id="bfill"></div></div><div id="bpct">50%</div></div>
     <div id="brw"><input id="br" type="range" min="5" max="100" value="50"></div>
   </div>
   <div id="bar">
@@ -117,6 +122,7 @@ function showOvl(sticky) {
   if (mini) return;
   $("big").classList.add("on");
   document.body.classList.add("ovl");
+  hintBri();
   clearTimeout(ovlTimer);
   if (!sticky && isPlaying()) ovlTimer = setTimeout(hideOvl, 3000);
 }
@@ -124,6 +130,7 @@ function hideOvl() {
   clearTimeout(ovlTimer);
   $("big").classList.remove("on");
   document.body.classList.remove("ovl");
+  if (!bg || !bg.on) $("bri").style.display = "none";
 }
 
 function onState(e) {
@@ -134,9 +141,10 @@ function onState(e) {
   if (window.Native && Native.state) Native.state(s);
   if (s === 0) { p.seekTo(0, true); p.pauseVideo(); return; }
   if (s === 2) showOvl(true);                 // रुका हुआ: ▶ दिखता रहे
-  else if (s === 1 && $("big").classList.contains("on")) {
+  else if (s === 1 && !mini) {
+    $("big").classList.add("on");             // YouTube का अपना आइकन हमारे बटन के पीछे छिपे
     clearTimeout(ovlTimer);
-    ovlTimer = setTimeout(hideOvl, 1200);     // चलना शुरू: जल्दी छिप जाए
+    ovlTimer = setTimeout(hideOvl, 1500);     // चलना शुरू: थोड़ी देर बाद छिप जाए
   }
 }
 
@@ -224,6 +232,10 @@ function tdist(t) {
   return Math.sqrt(dx * dx + dy * dy);
 }
 function tmid(t) { return { x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 }; }
+function inBriZone(t0) {
+  var r = $("shield").getBoundingClientRect();
+  return t0.clientX >= r.left + r.width * 0.6;     // दायाँ हिस्सा = ब्राइटनेस
+}
 function inFs() { return document.body.classList.contains("fs"); }
 var sh = $("shield");
 sh.addEventListener("touchstart", function (e) {
@@ -232,7 +244,7 @@ sh.addEventListener("touchstart", function (e) {
     pan = null;
     pinch = { d: tdist(e.touches), z: zs, m: tmid(e.touches), tx: tx, ty: ty };
     e.preventDefault();
-  } else if (e.touches.length === 1 && zs > 1) {
+  } else if (e.touches.length === 1 && zs > 1 && !inBriZone(e.touches[0])) {
     pan = { x: e.touches[0].clientX, y: e.touches[0].clientY, tx: tx, ty: ty };
   }
 }, { passive: false });
@@ -279,18 +291,29 @@ $("br").addEventListener("input", function () {
 
 /* ---------- फुलस्क्रीन में दाएँ हिस्से पर उँगली नीचे से ऊपर = ब्राइटनेस बढ़ना (ऊपर से नीचे = घटना) ---------- */
 var bg = null, briTimer = null;
-function showBri(v) {
-  var b = $("bri");
-  b.textContent = "\u2600 " + v + "%";
-  b.style.display = "block";
+function drawBri(v) {
+  $("bfill").style.height = v + "%";
+  $("bpct").textContent = v + "%";
+  $("bri").style.display = "flex";
+}
+function showBri(v) {                 // उँगली चलते समय: साफ़ दिखे
+  drawBri(v);
+  $("bri").classList.remove("hint");
   clearTimeout(briTimer);
-  briTimer = setTimeout(function () { b.style.display = "none"; }, 800);
+  briTimer = setTimeout(function () {
+    if (document.body.classList.contains("ovl")) hintBri(); else $("bri").style.display = "none";
+  }, 900);
+}
+function hintBri() {                  // बटन दिखते समय: हल्का सा, ताकि पता चले ब्राइटनेस की पट्टी यहाँ है
+  if (!inFs()) return;
+  drawBri(parseInt($("br").value, 10) || 50);
+  $("bri").classList.add("hint");
 }
 sh.addEventListener("touchstart", function (e) {
   bg = null;
-  if (!inFs() || e.touches.length !== 1 || zs > 1.01) return;
+  if (!inFs() || e.touches.length !== 1) return;
   var r = sh.getBoundingClientRect(), t0 = e.touches[0];
-  if (t0.clientX < r.left + r.width * 0.6) return;   // सिर्फ़ दायाँ हिस्सा
+  if (!inBriZone(t0)) return;   // सिर्फ़ दायाँ हिस्सा (ज़ूम में भी चलेगा)
   var cur = parseInt($("br").value, 10) || 50;
   try { if (window.Native && Native.getBrightness) cur = Native.getBrightness(); } catch (x) {}
   bg = { y: t0.clientY, x: t0.clientX, b: cur, on: false, h: Math.max(120, r.height) };
