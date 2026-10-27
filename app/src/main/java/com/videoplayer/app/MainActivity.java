@@ -1,9 +1,11 @@
 package com.videoplayer.app;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
@@ -14,6 +16,9 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -22,6 +27,7 @@ import android.view.ViewOutlineProvider;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -34,6 +40,15 @@ import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.util.ArrayList;
+import com.unity3d.ads.IUnityAdsInitializationListener;
+import com.unity3d.ads.UnityAds;
+import com.unity3d.services.banners.BannerErrorInfo;
+import com.unity3d.services.banners.BannerView;
+import com.unity3d.services.banners.UnityBannerSize;
+
+import org.json.JSONObject;
+
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -73,7 +88,44 @@ public class MainActivity extends Activity {
             + "},true);"
             + "})();";
 
+    // YouTube की आवाज़-खोज (माइक) के लिए: फोन की अपनी Speech Recognition से जोड़ता है
+    private static final String SPEECH_JS =
+            "(function(){"
+            + "if(window.__vpSpeech)return;window.__vpSpeech=true;"
+            + "function SR(){this.lang='hi-IN';this.continuous=false;this.interimResults=false;this.maxAlternatives=1;this._l={};}"
+            + "SR.prototype.start=function(){window.__vpSR=this;Speech.start();};"
+            + "SR.prototype.stop=function(){Speech.stop();};"
+            + "SR.prototype.abort=function(){Speech.cancel();};"
+            + "SR.prototype.addEventListener=function(t,f){(this._l[t]=this._l[t]||[]).push(f);};"
+            + "SR.prototype.removeEventListener=function(t,f){var a=this._l[t]||[];var i=a.indexOf(f);if(i>-1)a.splice(i,1);};"
+            + "function fire(o,t,ev){ev=ev||{};ev.type=t;var h=o['on'+t];if(typeof h==='function'){try{h.call(o,ev);}catch(e){}}(o._l[t]||[]).forEach(function(f){try{f.call(o,ev);}catch(e){}});}"
+            + "window.__vpSpeechEvent=function(type,text){var o=window.__vpSR;if(!o)return;"
+            + "if(type==='result'){var alt={transcript:text,confidence:0.9};var res=[alt];res.isFinal=true;res.item=function(i){return res[i];};var list=[res];list.item=function(i){return list[i];};fire(o,'result',{results:list,resultIndex:0});}"
+            + "else if(type==='error'){fire(o,'error',{error:text});}"
+            + "else{fire(o,type);}};"
+            + "window.SpeechRecognition=SR;window.webkitSpeechRecognition=SR;"
+            + "})();";
+
+    // पेज को ज़ूम / किनारे खाली होने से रोकता है
+    private static final String VIEW_FIX =
+            "try{var vm=document.querySelector('meta[name=viewport]');"
+            + "if(vm)vm.setAttribute('content','width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no');"
+            + "document.documentElement.style.overflowX='hidden';}catch(x){}";
+
+    private static final int REQ_AUDIO = 77;
+
+    // Unity Ads (सिर्फ़ वीडियो प्लेयर के नीचे बैनर)
+    private static final String UNITY_GAME_ID = "800411568";
+    private static final String BANNER_PLACEMENT = "BP_Banner_Android";
+    // असली विज्ञापन चलाने के लिए इसे false कर दीजिए (पहले true रखकर जाँच लीजिए)
+    private static final boolean UNITY_TEST_MODE = true;
+
     private int mode = MODE_NONE;
+    private SpeechRecognizer recognizer;
+    private FrameLayout bannerHolder;
+    private BannerView banner;
+    private PermissionRequest pendingWebPerm;
+    private boolean pendingStart;
     private int corner;
     private boolean fsOn;
 
@@ -122,6 +174,7 @@ public class MainActivity extends Activity {
 
         buildPlayerLayer();
         setContentView(root);
+        initAds();
         applyChrome();
 
         WebSettings s = ytWeb.getSettings();
@@ -130,12 +183,43 @@ public class MainActivity extends Activity {
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setSupportMultipleWindows(false);
         s.setForceDark(WebSettings.FORCE_DARK_OFF);
+        s.setSupportZoom(false);
+        s.setBuiltInZoomControls(false);
+        s.setDisplayZoomControls(false);
+        s.setUseWideViewPort(true);
+        s.setLoadWithOverviewMode(false);
 
         CookieManager cm = CookieManager.getInstance();
         cm.setAcceptCookie(true);
         cm.setAcceptThirdPartyCookies(ytWeb, true);
 
         ytWeb.addJavascriptInterface(new Bridge(), "VideoBridge");
+        ytWeb.addJavascriptInterface(new SpeechBridge(), "Speech");
+        ytWeb.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        boolean wantsAudio = false;
+                        for (String r : request.getResources()) {
+                            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) wantsAudio = true;
+                        }
+                        if (!wantsAudio) {
+                            request.deny();
+                            return;
+                        }
+                        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                                == PackageManager.PERMISSION_GRANTED) {
+                            request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                        } else {
+                            pendingWebPerm = request;
+                            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
+                        }
+                    }
+                });
+            }
+        });
         ytWeb.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -149,12 +233,12 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                view.evaluateJavascript(HOOK, null);
+                inject(view);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                view.evaluateJavascript(HOOK, null);
+                inject(view);
             }
         });
 
@@ -232,15 +316,6 @@ public class MainActivity extends Activity {
         });
         top.addView(close, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
-        TextView title = new TextView(this);
-        title.setText("वीडियो प्लेयर");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(17);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        tp.leftMargin = dp(12);
-        top.addView(title, tp);
 
         fullBg.addView(top, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(TOP_H), Gravity.TOP));
@@ -271,7 +346,7 @@ public class MainActivity extends Activity {
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         miniPp = new TextView(this);
-        miniPp.setText("⏸");
+        miniPp.setText("❚❚");
         miniPp.setTextColor(Color.WHITE);
         miniPp.setTextSize(22);
         miniPp.setGravity(Gravity.CENTER);
@@ -324,6 +399,12 @@ public class MainActivity extends Activity {
         card.addView(spinner, sp);
 
         playerLayer.addView(card);
+
+        // सीक बार के नीचे बैनर विज्ञापन की जगह
+        bannerHolder = new FrameLayout(this);
+        bannerHolder.setVisibility(View.GONE);
+        playerLayer.addView(bannerHolder, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(60), Gravity.TOP));
 
         // मिनी में वीडियो पर टैप -> फिर बड़ा
         miniTap = new View(this);
@@ -396,7 +477,7 @@ public class MainActivity extends Activity {
         spinner.setVisibility(View.VISIBLE);
         spinner.removeCallbacks(hideSpinner);
         spinner.postDelayed(hideSpinner, 8000);
-        miniPp.setText("⏸");
+        miniPp.setText("❚❚");
         pWeb.loadDataWithBaseURL("https://videoplayer.app/", page, "text/html", "utf-8", null);
         setMode(MODE_FULL);
     }
@@ -424,6 +505,7 @@ public class MainActivity extends Activity {
         yl.bottomMargin = (m == MODE_MINI) ? dp(MINI_H) : 0;
         ytWeb.setLayoutParams(yl);
         applyChrome();
+        relayoutYt();
     }
 
     private void stopPlayer() {
@@ -467,6 +549,7 @@ public class MainActivity extends Activity {
         applyCardLayout();
         applyChrome();
         pWeb.evaluateJavascript("setFs(" + on + ")", null);
+        relayoutYt();
     }
 
     private void applyCardLayout() {
@@ -491,6 +574,19 @@ public class MainActivity extends Activity {
         }
         card.setLayoutParams(lp);
         miniTap.setLayoutParams(new FrameLayout.LayoutParams(lp));
+
+        // बैनर: सिर्फ़ बड़े प्लेयर में, पोर्ट्रेट में, सीक बार वाले कार्ड के ठीक नीचे
+        boolean portrait = getResources().getConfiguration().orientation
+                != Configuration.ORIENTATION_LANDSCAPE;
+        if (!fsOn && mode == MODE_FULL && portrait) {
+            FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(60), Gravity.TOP);
+            bl.topMargin = lp.topMargin + lp.height + dp(12);
+            bannerHolder.setLayoutParams(bl);
+            bannerHolder.setVisibility(View.VISIBLE);
+        } else {
+            bannerHolder.setVisibility(View.GONE);
+        }
     }
 
     /** स्टेटस बार / नेविगेशन बार के रंग: बड़े प्लेयर में गहरे, बाकी में वाइट */
@@ -513,6 +609,13 @@ public class MainActivity extends Activity {
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         if (card != null && mode != MODE_NONE) applyCardLayout();
+        relayoutYt();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        relayoutYt();
     }
 
     // ------------------------------------------------------------------
@@ -608,7 +711,7 @@ public class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    miniPp.setText((s == 1 || s == 3) ? "⏸" : "▶");
+                    miniPp.setText((s == 1 || s == 3) ? "❚❚" : "▶\uFE0E");
                 }
             });
         }
@@ -630,6 +733,232 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Unity Ads बैनर
+    // ------------------------------------------------------------------
+    private void initAds() {
+        try {
+            UnityAds.initialize(getApplicationContext(), UNITY_GAME_ID, UNITY_TEST_MODE,
+                    new IUnityAdsInitializationListener() {
+                        @Override
+                        public void onInitializationComplete() {
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    loadBanner();
+                                }
+                            });
+                        }
+
+                        @Override
+                        public void onInitializationFailed(
+                                UnityAds.UnityAdsInitializationError error, String message) {
+                            // विज्ञापन न आए तो भी ऐप चलता रहेगा
+                        }
+                    });
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void loadBanner() {
+        try {
+            if (banner != null) return;
+            banner = new BannerView(this, BANNER_PLACEMENT, new UnityBannerSize(320, 50));
+            banner.setListener(new BannerView.IListener() {
+                @Override
+                public void onBannerLoaded(BannerView bannerAdView) {
+                }
+
+                public void onBannerShown(BannerView bannerAdView) {
+                }
+
+                @Override
+                public void onBannerClick(BannerView bannerAdView) {
+                }
+
+                @Override
+                public void onBannerFailedToLoad(BannerView bannerAdView, BannerErrorInfo errorInfo) {
+                }
+
+                @Override
+                public void onBannerLeftApplication(BannerView bannerAdView) {
+                }
+            });
+            bannerHolder.addView(banner, new FrameLayout.LayoutParams(
+                    dp(320), dp(50), Gravity.CENTER));
+            banner.load();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void inject(WebView view) {
+        view.evaluateJavascript(HOOK, null);
+        view.evaluateJavascript(SPEECH_JS, null);
+        view.evaluateJavascript(VIEW_FIX, null);
+    }
+
+    /** वीडियो देखकर लौटने पर YouTube का पेज दोबारा पूरी चौड़ाई में बिठाता है (किनारे खाली न रहें) */
+    private void relayoutYt() {
+        if (ytWeb == null) return;
+        ytWeb.requestLayout();
+        ytWeb.evaluateJavascript("window.dispatchEvent(new Event('resize'));", null);
+        ytWeb.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (ytWeb != null) {
+                    ytWeb.requestLayout();
+                    ytWeb.evaluateJavascript("window.dispatchEvent(new Event('resize'));", null);
+                }
+            }
+        }, 350);
+    }
+
+    // ------------------------------------------------------------------
+    // आवाज़ से खोज (माइक)
+    // ------------------------------------------------------------------
+    private class SpeechBridge {
+        @JavascriptInterface
+        public void start() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    startListening();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void stop() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (recognizer != null) recognizer.stopListening();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void cancel() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (recognizer != null) recognizer.cancel();
+                }
+            });
+        }
+    }
+
+    private void speechEvent(String type, String text) {
+        if (ytWeb == null) return;
+        ytWeb.evaluateJavascript("window.__vpSpeechEvent&&window.__vpSpeechEvent("
+                + JSONObject.quote(type) + "," + JSONObject.quote(text) + ")", null);
+    }
+
+    private void startListening() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            pendingStart = true;
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
+            return;
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            speechEvent("error", "service-not-allowed");
+            speechEvent("end", "");
+            return;
+        }
+        if (recognizer == null) {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+            recognizer.setRecognitionListener(new RecognitionListener() {
+                @Override
+                public void onReadyForSpeech(Bundle params) {
+                    speechEvent("start", "");
+                    speechEvent("audiostart", "");
+                }
+
+                @Override
+                public void onBeginningOfSpeech() {
+                    speechEvent("speechstart", "");
+                }
+
+                @Override
+                public void onRmsChanged(float rmsdB) {
+                }
+
+                @Override
+                public void onBufferReceived(byte[] buffer) {
+                }
+
+                @Override
+                public void onEndOfSpeech() {
+                    speechEvent("speechend", "");
+                }
+
+                @Override
+                public void onError(int error) {
+                    String code;
+                    if (error == SpeechRecognizer.ERROR_NO_MATCH
+                            || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                        code = "no-speech";
+                    } else if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                        code = "not-allowed";
+                    } else if (error == SpeechRecognizer.ERROR_AUDIO) {
+                        code = "audio-capture";
+                    } else {
+                        code = "network";
+                    }
+                    speechEvent("error", code);
+                    speechEvent("end", "");
+                }
+
+                @Override
+                public void onResults(Bundle results) {
+                    ArrayList<String> r = results.getStringArrayList(
+                            SpeechRecognizer.RESULTS_RECOGNITION);
+                    if (r != null && !r.isEmpty()) speechEvent("result", r.get(0));
+                    speechEvent("end", "");
+                }
+
+                @Override
+                public void onPartialResults(Bundle partialResults) {
+                }
+
+                @Override
+                public void onEvent(int eventType, Bundle params) {
+                }
+            });
+        }
+        Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN");
+        i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
+        i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        recognizer.startListening(i);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQ_AUDIO) return;
+        boolean ok = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        if (pendingStart) {
+            pendingStart = false;
+            if (ok) {
+                startListening();
+            } else {
+                speechEvent("error", "not-allowed");
+                speechEvent("end", "");
+            }
+        }
+        if (pendingWebPerm != null) {
+            if (ok) {
+                pendingWebPerm.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+            } else {
+                pendingWebPerm.deny();
+            }
+            pendingWebPerm = null;
+        }
+    }
+
     private String readAsset(String name) throws Exception {
         InputStream in = getAssets().open(name);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -646,6 +975,17 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (banner != null) {
+            try {
+                banner.destroy();
+            } catch (Throwable ignored) {
+            }
+            banner = null;
+        }
+        if (recognizer != null) {
+            recognizer.destroy();
+            recognizer = null;
+        }
         if (pWeb != null) {
             pWeb.loadUrl("about:blank");
             pWeb.destroy();
