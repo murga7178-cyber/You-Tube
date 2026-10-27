@@ -129,12 +129,19 @@ public class MainActivity extends Activity {
     private SpeechRecognizer recognizer;
     private FrameLayout bannerHolder;
     private BannerView banner;
-    private boolean adsReady, bannerOk;
+    private boolean adsReady, bannerOk, bannerLoading;
     private int bannerTries;
     private PermissionRequest pendingWebPerm;
     private boolean pendingStart;
     private int corner;
     private boolean fsOn;
+    private boolean ytLocked;
+    private final Runnable unlockRun = new Runnable() {
+        @Override
+        public void run() {
+            unlockYt();
+        }
+    };
 
     private FrameLayout root;
     private WebView ytWeb;
@@ -444,6 +451,8 @@ public class MainActivity extends Activity {
                 }
                 customView = view;
                 customCallback = callback;
+                ytWeb.removeCallbacks(unlockRun);
+                lockYt();
                 root.addView(view, new FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                 getWindow().getDecorView().setSystemUiVisibility(
@@ -462,6 +471,7 @@ public class MainActivity extends Activity {
                 if (customCallback != null) customCallback.onCustomViewHidden();
                 customCallback = null;
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                ytWeb.postDelayed(unlockRun, 1500);
                 applyChrome();
             }
         });
@@ -532,6 +542,10 @@ public class MainActivity extends Activity {
     private void setFullscreen(boolean on) {
         if (mode == MODE_NONE) return;
         fsOn = on;
+        if (on) {
+            ytWeb.removeCallbacks(unlockRun);
+            lockYt();
+        }
         WindowManager.LayoutParams a = getWindow().getAttributes();
         if (on) {
             a.layoutInDisplayCutoutMode =
@@ -550,6 +564,7 @@ public class MainActivity extends Activity {
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
             getWindow().setAttributes(a);
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+            ytWeb.postDelayed(unlockRun, 1500);   // पक्का: 1.5 सेकंड में साइज़ खोल दो
         }
         fullBg.setVisibility((!on && mode == MODE_FULL) ? View.VISIBLE : View.GONE);
         corner = on ? 0 : dp(16);
@@ -596,8 +611,9 @@ public class MainActivity extends Activity {
             if (adsReady) {
                 if (banner == null) {
                     loadBanner();
-                } else if (!bannerOk) {
+                } else if (!bannerOk && !bannerLoading) {
                     try {
+                        bannerLoading = true;
                         banner.load();
                     } catch (Throwable ignored) {
                     }
@@ -628,6 +644,10 @@ public class MainActivity extends Activity {
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         if (card != null && mode != MODE_NONE) applyCardLayout();
+        if (ytLocked && !fsOn && customView == null
+                && newConfig.orientation == Configuration.ORIENTATION_PORTRAIT) {
+            unlockYt();
+        }
         relayoutYt();
     }
 
@@ -800,6 +820,7 @@ public class MainActivity extends Activity {
                 @Override
                 public void onBannerLoaded(BannerView bannerAdView) {
                     bannerOk = true;
+                    bannerLoading = false;
                 }
 
                 public void onBannerShown(BannerView bannerAdView) {
@@ -812,21 +833,25 @@ public class MainActivity extends Activity {
                 @Override
                 public void onBannerFailedToLoad(BannerView bannerAdView, final BannerErrorInfo errorInfo) {
                     bannerOk = false;
+                    bannerLoading = false;
                     final String why = errorInfo == null ? "?" : String.valueOf(errorInfo.errorMessage);
                     Log.e("UnityBanner", "banner failed: " + why);
                     // जाँच के लिए: कारण स्क्रीन पर दिखेगा (काम करने लगे तो यह Toast हटा सकते हैं)
                     Toast.makeText(MainActivity.this, "Banner fail: " + why, Toast.LENGTH_LONG).show();
-                    if (bannerTries < 5 && bannerHolder != null) {
+                    if (bannerTries < 8 && bannerHolder != null) {
                         bannerTries++;
                         bannerHolder.postDelayed(new Runnable() {
                             @Override
                             public void run() {
                                 try {
-                                    if (banner != null && !bannerOk) banner.load();
+                                    if (banner != null && !bannerOk && !bannerLoading) {
+                                        bannerLoading = true;
+                                        banner.load();
+                                    }
                                 } catch (Throwable ignored) {
                                 }
                             }
-                        }, 20000);
+                        }, 30000);
                     }
                 }
 
@@ -836,6 +861,7 @@ public class MainActivity extends Activity {
             });
             bannerHolder.addView(banner, new FrameLayout.LayoutParams(
                     dp(320), dp(50), Gravity.CENTER));
+            bannerLoading = true;
             banner.load();
         } catch (Throwable ignored) {
         }
@@ -848,12 +874,38 @@ public class MainActivity extends Activity {
     }
 
     /** वीडियो देखकर / घुमाकर लौटने पर YouTube का पेज दोबारा पूरी चौड़ाई में, बाईं ओर से बिठाता है */
+    /** फुलस्क्रीन के दौरान पीछे का YouTube पेज आड़ा न हो जाए: उसका साइज़ जैसा था वैसा ही पक्का कर देता है */
+    private void lockYt() {
+        if (ytWeb == null || ytLocked) return;
+        int w = ytWeb.getWidth(), h = ytWeb.getHeight();
+        if (w <= 0 || h <= 0) return;
+        FrameLayout.LayoutParams yl = (FrameLayout.LayoutParams) ytWeb.getLayoutParams();
+        yl.width = w;
+        yl.height = h;
+        yl.bottomMargin = 0;
+        yl.gravity = Gravity.TOP | Gravity.LEFT;
+        ytWeb.setLayoutParams(yl);
+        ytLocked = true;
+    }
+
+    private void unlockYt() {
+        if (ytWeb == null || !ytLocked) return;
+        ytLocked = false;
+        FrameLayout.LayoutParams yl = (FrameLayout.LayoutParams) ytWeb.getLayoutParams();
+        yl.width = ViewGroup.LayoutParams.MATCH_PARENT;
+        yl.height = ViewGroup.LayoutParams.MATCH_PARENT;
+        yl.bottomMargin = (mode == MODE_MINI) ? dp(MINI_H) : 0;
+        ytWeb.setLayoutParams(yl);
+        relayoutYt();
+    }
+
     private void healYt() {
         if (ytWeb == null) return;
         ytWeb.requestLayout();
         ytWeb.scrollTo(0, ytWeb.getScrollY());          // आड़ा खिसकाव हटाओ
         ytWeb.evaluateJavascript(VIEW_FIX, null);       // ज़ूम 1 पर, किनारे बराबर
-        ytWeb.evaluateJavascript("window.dispatchEvent(new Event('resize'));", null);
+        ytWeb.evaluateJavascript("window.dispatchEvent(new Event('orientationchange'));"
+                + "window.dispatchEvent(new Event('resize'));", null);
     }
 
     private void relayoutYt() {
