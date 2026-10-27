@@ -12,6 +12,10 @@ import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -31,6 +35,7 @@ import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.OrientationEventListener;
 import android.view.View;
@@ -46,9 +51,11 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.Switch;
 import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
@@ -239,6 +246,11 @@ public class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        sensorMgr = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        proxSensor = sensorMgr == null ? null : sensorMgr.getDefaultSensor(Sensor.TYPE_PROXIMITY);
+        waveOn = proxSensor != null
+                && getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_WAVE, false);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.WHITE);
@@ -982,11 +994,12 @@ public class MainActivity extends Activity {
         // ✕ और होम के बीच: रिवॉर्डेड वीडियो बटन
         rewBtn = new TextView(this);
         rewBtn.setTextColor(Color.WHITE);
-        rewBtn.setTextSize(14);
+        rewBtn.setTextSize(13);
+        rewBtn.setEllipsize(TextUtils.TruncateAt.END);
         rewBtn.setTypeface(Typeface.DEFAULT_BOLD);
         rewBtn.setGravity(Gravity.CENTER);
         rewBtn.setSingleLine(true);
-        rewBtn.setPadding(dp(14), 0, dp(14), 0);
+        rewBtn.setPadding(dp(10), 0, dp(10), 0);
         rewBtn.setElevation(dp(4));
         updateRewBtn();
         rewBtn.setOnClickListener(new View.OnClickListener() {
@@ -997,11 +1010,39 @@ public class MainActivity extends Activity {
         });
         LinearLayout.LayoutParams rbLp = new LinearLayout.LayoutParams(0, dp(38), 1f);
         rbLp.leftMargin = dp(12);
-        rbLp.rightMargin = dp(12);
+        rbLp.rightMargin = dp(6);
         top.addView(rewBtn, rbLp);
 
-        // दाएँ कोने में होम: एक कदम पीछे -> प्लेयर नीचे छोटा, YouTube का पेज खुल जाए
-        HomeIcon home = new HomeIcon(this);
+        // हाथ लहराओ -> अगला Shorts: चालू/बंद का स्विच
+        LinearLayout waveBox = new LinearLayout(this);
+        waveBox.setOrientation(LinearLayout.HORIZONTAL);
+        waveBox.setGravity(Gravity.CENTER_VERTICAL);
+        TextView waveIcon = new TextView(this);
+        waveIcon.setText("✋");
+        waveIcon.setTextSize(15);
+        waveBox.addView(waveIcon);
+        waveSwitch = new Switch(this);
+        waveSwitch.setChecked(waveOn);
+        int[][] st = new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}};
+        waveSwitch.setThumbTintList(new ColorStateList(st, new int[]{0xFFFFFFFF, 0xFFDDDDDD}));
+        waveSwitch.setTrackTintList(new ColorStateList(st, new int[]{0xFFFF3D3D, 0x66FFFFFF}));
+        waveSwitch.setScaleX(0.8f);
+        waveSwitch.setScaleY(0.8f);
+        waveSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                setWave(on);
+            }
+        });
+        waveBox.addView(waveSwitch, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams wbLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        wbLp.rightMargin = dp(2);
+        top.addView(waveBox, wbLp);
+
+        // दाएँ कोने में मिनिमाइज़: प्लेयर नीचे छोटा, YouTube का पेज खुल जाए
+        MinimizeIcon home = new MinimizeIcon(this);
         GradientDrawable circle2 = new GradientDrawable();
         circle2.setShape(GradientDrawable.OVAL);
         circle2.setColor(0x33FFFFFF);
@@ -1292,12 +1333,12 @@ public class MainActivity extends Activity {
         relayoutYt();
     }
 
-    /** होम का चित्र (छत, दीवार, दरवाज़ा) */
-    private static class HomeIcon extends View {
+    /** मिनिमाइज़ का चित्र (नीचे की ओर तीर + नीचे पट्टी) */
+    private static class MinimizeIcon extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path path = new Path();
 
-        HomeIcon(Context c) {
+        MinimizeIcon(Context c) {
             super(c);
             paint.setColor(Color.WHITE);
             paint.setStyle(Paint.Style.STROKE);
@@ -1310,17 +1351,11 @@ public class MainActivity extends Activity {
             float u = getWidth() / 40f;
             paint.setStrokeWidth(2.2f * u);
             path.reset();
-            path.moveTo(10 * u, 21 * u);
-            path.lineTo(20 * u, 12 * u);
-            path.lineTo(30 * u, 21 * u);
-            path.moveTo(13 * u, 19 * u);
-            path.lineTo(13 * u, 29 * u);
-            path.lineTo(27 * u, 29 * u);
-            path.lineTo(27 * u, 19 * u);
-            path.moveTo(18 * u, 29 * u);
-            path.lineTo(18 * u, 23 * u);
-            path.lineTo(22 * u, 23 * u);
-            path.lineTo(22 * u, 29 * u);
+            path.moveTo(11 * u, 14 * u);
+            path.lineTo(20 * u, 23 * u);
+            path.lineTo(29 * u, 14 * u);
+            path.moveTo(12 * u, 28 * u);
+            path.lineTo(28 * u, 28 * u);
             canvas.drawPath(path, paint);
         }
     }
@@ -1507,6 +1542,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        stopProx();
         if (root != null) root.removeCallbacks(urlPoll);
         if (orient != null) orient.disable();
         super.onPause();
@@ -1559,6 +1595,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (orient != null && orient.canDetectOrientation()) orient.enable();
+        updateWaveSensor();
         if (root != null) {
             root.removeCallbacks(urlPoll);
             root.postDelayed(urlPoll, 1000);
@@ -1569,6 +1606,109 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------
     // Share, bridges, बैक
     // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // सेंसर के आगे हाथ लहराओ -> Shorts में अगला वीडियो (उँगली से ऊपर स्वाइप जैसा)
+    // ------------------------------------------------------------------
+    private static final String PREFS = "vp_prefs", PREF_WAVE = "wave_next";
+    private static final int WAVE_GAP_MS = 1000;   // दो बार लगातार न लगे
+    private SensorManager sensorMgr;
+    private Sensor proxSensor;
+    private Switch waveSwitch;
+    private boolean waveOn, proxNear, proxRegistered;
+    private long lastWaveMs;
+
+    private final SensorEventListener proxListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent e) {
+            if (proxSensor == null || e.values == null || e.values.length == 0) return;
+            boolean near = e.values[0] < Math.min(5f, proxSensor.getMaximumRange());
+            if (near && !proxNear) {
+                proxNear = true;
+                onWave();
+            } else if (!near) {
+                proxNear = false;
+            }
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+        }
+    };
+
+    private void setWave(boolean on) {
+        if (on == waveOn) return;
+        if (on && proxSensor == null) {
+            Toast.makeText(this, "इस फ़ोन में प्रॉक्सिमिटी सेंसर नहीं मिला", Toast.LENGTH_SHORT).show();
+            if (waveSwitch != null) waveSwitch.setChecked(false);
+            return;
+        }
+        waveOn = on;
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(PREF_WAVE, on).apply();
+        updateWaveSensor();
+        Toast.makeText(this, on ? "✋ हाथ लहराकर अगला Shorts: चालू"
+                : "✋ हाथ लहराकर अगला Shorts: बंद", Toast.LENGTH_SHORT).show();
+    }
+
+    private void updateWaveSensor() {
+        boolean want = waveOn && proxSensor != null && sensorMgr != null;
+        if (want && !proxRegistered) {
+            proxNear = true;     // शुरू में सेंसर ढका हो तो अपने-आप न लगे
+            proxRegistered = sensorMgr.registerListener(proxListener, proxSensor,
+                    SensorManager.SENSOR_DELAY_NORMAL);
+        } else if (!want) {
+            stopProx();
+        }
+    }
+
+    private void stopProx() {
+        if (proxRegistered && sensorMgr != null) {
+            try {
+                sensorMgr.unregisterListener(proxListener);
+            } catch (Throwable ignored) {
+            }
+        }
+        proxRegistered = false;
+    }
+
+    private void onWave() {
+        long now = SystemClock.uptimeMillis();
+        if (now - lastWaveMs < WAVE_GAP_MS) return;
+        // सिर्फ़ Shorts देखते समय (प्लेयर बंद, विज्ञापन/लोडिंग न चल रही हो)
+        if (!onShorts || mode != MODE_NONE || ytWeb == null || ytLocked || customView != null
+                || rewShowing || (loadView != null && loadView.getVisibility() == View.VISIBLE)) return;
+        lastWaveMs = now;
+        swipeNextShort();
+    }
+
+    /** उँगली जैसा ऊपर स्वाइप: नीचे से ऊपर की ओर तेज़ खिसकाव -> अगला Shorts */
+    private void swipeNextShort() {
+        int w = ytWeb.getWidth(), h = ytWeb.getHeight();
+        if (w <= 0 || h <= 0) return;
+        final float x = w / 2f, y0 = h * 0.72f, y1 = h * 0.22f;
+        final long down = SystemClock.uptimeMillis();
+        final int steps = 12;
+        sendTouch(down, down, MotionEvent.ACTION_DOWN, x, y0);
+        for (int i = 1; i <= steps; i++) {
+            final int k = i;
+            root.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    sendTouch(down, down + k * 16L,
+                            k == steps ? MotionEvent.ACTION_UP : MotionEvent.ACTION_MOVE,
+                            x, y0 + (y1 - y0) * k / steps);
+                }
+            }, k * 16L);
+        }
+    }
+
+    private void sendTouch(long downTime, long time, int action, float x, float y) {
+        if (ytWeb == null || ytLocked) return;
+        MotionEvent ev = MotionEvent.obtain(downTime, time, action, x, y, 0);
+        ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        ytWeb.dispatchTouchEvent(ev);
+        ev.recycle();
+    }
+
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
@@ -1679,7 +1819,8 @@ public class MainActivity extends Activity {
         } else if (mode == MODE_FULL) {
             setMode(MODE_MINI);          // बैक -> वीडियो नीचे छोटा होकर चलता रहेगा
         } else if (ytWeb != null && ytWeb.canGoBack()) {
-            showBackLoading();           // काली स्क्रीन की जगह लोडिंग
+            // Shorts से बैक: पुराना पेज पहले से खुला है, इसलिए बिना लोडिंग के तुरंत दिखे
+            if (!onShorts) showBackLoading();   // बाकी पेजों पर काली स्क्रीन की जगह लोडिंग
             ytWeb.goBack();
         } else {
             super.onBackPressed();
