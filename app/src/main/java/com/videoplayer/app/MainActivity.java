@@ -297,6 +297,7 @@ public class MainActivity extends Activity {
 
         // ---- बड़ा मोड: ग्रेडिएंट बैकग्राउंड + ऊपर ✕ और नाम ----
         fullBg = new FrameLayout(this);
+        fullBg.setClickable(true);   // खाली जगह पर टैप पीछे के YouTube पेज तक न पहुँचे
         fullBg.setBackground(new GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{0xFF222222, 0xFF000000}));
