@@ -20,7 +20,7 @@ body.mini #bar{display:none !important}
 #r1,#r2{display:flex;align-items:center;gap:8px;padding:0 10px}
 #r1{height:52px}
 #r2{height:44px;justify-content:center;gap:16px}
-#pp,#fs{background:none;border:0;color:#fff;font-size:22px;width:38px;height:38px;padding:0;flex:none}
+#pp,#fs,#qbtn{background:none;border:0;color:#fff;font-size:22px;width:38px;height:38px;padding:0;flex:none}
 #seek,#br{flex:1;min-width:0;height:30px;margin:0}
 #seek{accent-color:#f00}
 #bri{position:absolute;z-index:7;right:18px;top:50%;transform:translateY(-50%);width:46px;padding:10px 0;border-radius:23px;background:rgba(0,0,0,.65);color:#fff;display:none;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
@@ -32,6 +32,12 @@ body.mini #bar{display:none !important}
 #brw{position:absolute;right:12px;top:50%;width:40px;height:180px;margin-top:-90px;z-index:6;display:none}
 #brw{display:none !important}
 #br{position:absolute;width:160px;height:30px;left:-60px;top:75px;margin:0;transform:rotate(-90deg);accent-color:#fff}
+#qmenu{position:absolute;z-index:8;right:10px;bottom:10px;min-width:150px;max-height:85%;overflow:auto;background:rgba(20,20,20,.96);border-radius:12px;padding:6px 0;display:none;color:#fff;font-size:14px}
+body.fs #qmenu{bottom:72px}
+body.mini #qmenu{display:none !important}
+#qmenu .h{font-size:12px;color:#aaa;padding:8px 18px 4px}
+#qmenu .q{padding:11px 18px;display:flex;justify-content:space-between;gap:18px}
+#qmenu .q.cur{color:#ff4d4d;font-weight:bold}
 .t{flex:none;min-width:92px;text-align:center}
 .sk{background:#272727;border:0;color:#fff;border-radius:16px;height:32px;padding:0 12px;font-size:13px;flex:none}
 .ic{flex:none;font-size:18px}
@@ -44,7 +50,8 @@ body.mini #bar{display:none !important}
     <div id="shield"></div>
     <button id="big"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M8 5v14l11-7z"/></svg></button>
     <div id="msg"></div>
-    <div id="bri"><div id="bsun">\u2600</div><div id="btrack"><div id="bfill"></div></div><div id="bpct">50%</div></div>
+    <div id="qmenu"></div>
+    <div id="bri"><div id="bsun">&#9728;</div><div id="btrack"><div id="bfill"></div></div><div id="bpct">50%</div></div>
     <div id="brw"><input id="br" type="range" min="5" max="100" value="50"></div>
   </div>
   <div id="bar">
@@ -52,6 +59,7 @@ body.mini #bar{display:none !important}
       <button id="pp"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M8 5v14l11-7z"/></svg></button>
       <span class="t" id="tm">0:00 / 0:00</span>
       <input id="seek" type="range" min="0" max="1000" value="0">
+      <button id="qbtn"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M19.14 12.94a7.1 7.1 0 0 0 .06-.94c0-.32-.02-.64-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.59-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.5.5 0 0 0-.59.22L2.74 8.87a.5.5 0 0 0 .12.64l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.12.22.37.3.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg></button>
       <button id="fs"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg></button>
     </div>
   </div>
@@ -153,7 +161,7 @@ function setMini(b) {
   mini = b;
   document.body.classList.toggle("mini", b);
   setTimeout(fitShield, 100);
-  if (b) hideOvl();
+  if (b) { hideOvl(); hideQ(); }
   $("msg").style.fontSize = b ? "9px" : "15px";
   $("msg").style.padding = b ? "4px" : "14px";
 }
@@ -194,6 +202,7 @@ function skip(sec) {
 /* ---------- वीडियो पर टैप: एक बार = बटन दिखे/छिपे, डबल टैप = 10 सेकंड आगे/पीछे ---------- */
 var lastTap = 0, tapTimer = null;
 $("shield").addEventListener("click", function (e) {
+  if ($("qmenu").style.display === "block") { hideQ(); return; }
   var now = Date.now();
   var r = this.getBoundingClientRect();
   var x = e.clientX - r.left;
@@ -268,6 +277,55 @@ sh.addEventListener("touchend", function (e) {
   if (e.touches.length < 2) pinch = null;
   if (e.touches.length === 0) pan = null;
   if (zs < 1.05 && zs !== 1) resetZoom();
+});
+
+
+/* ---------- सेटिंग: वीडियो क्वालिटी (720p / 480p / 360p ...) ---------- */
+var QN = { hd2160: "2160p", hd1440: "1440p", hd1080: "1080p", hd720: "720p", large: "480p", medium: "360p", small: "240p", tiny: "144p" };
+var QORDER = ["hd2160", "hd1440", "hd1080", "hd720", "large", "medium", "small", "tiny"];
+var qSel = "auto";
+function hideQ() { $("qmenu").style.display = "none"; }
+function openQ() {
+  if (!p || !p.getAvailableQualityLevels) return;
+  var av = [];
+  try { av = p.getAvailableQualityLevels() || []; } catch (e) {}
+  var list = QORDER.filter(function (q) { return av.indexOf(q) > -1; });
+  if (!list.length) list = ["hd1080", "hd720", "large", "medium", "small", "tiny"];
+  var cur = qSel;
+  var html = '<div class="h">वीडियो क्वालिटी</div>';
+  html += '<div class="q' + (cur === "auto" ? " cur" : "") + '" data-q="auto"><span>ऑटो</span><span>' + (cur === "auto" ? "\u2713" : "") + '</span></div>';
+  list.forEach(function (q) {
+    html += '<div class="q' + (cur === q ? " cur" : "") + '" data-q="' + q + '"><span>' + QN[q] + '</span><span>' + (cur === q ? "\u2713" : "") + '</span></div>';
+  });
+  var m = $("qmenu");
+  m.innerHTML = html;
+  m.style.display = "block";
+  showOvl(true);
+}
+function setQ(q) {
+  hideQ();
+  if (!p) return;
+  qSel = q;
+  var sq = (q === "auto") ? "default" : q;
+  try {
+    var d = p.getVideoData ? p.getVideoData() : null;
+    var t = p.getCurrentTime ? p.getCurrentTime() : 0;
+    var wasPlaying = isPlaying();
+    if (d && d.video_id) {
+      /* YouTube सीधे क्वालिटी बदलने देता नहीं, इसलिए उसी जगह से वही वीडियो नई क्वालिटी में फिर लगाते हैं */
+      p.loadVideoById({ videoId: d.video_id, startSeconds: t, suggestedQuality: sq });
+      if (!wasPlaying) setTimeout(function () { try { p.pauseVideo(); } catch (e) {} }, 900);
+    }
+    try { p.setPlaybackQuality(sq); } catch (e) {}
+  } catch (e) {}
+  flash("\u2699 " + (q === "auto" ? "ऑटो" : QN[q]));
+}
+$("qbtn").addEventListener("click", function () {
+  if ($("qmenu").style.display === "block") hideQ(); else openQ();
+});
+$("qmenu").addEventListener("click", function (e) {
+  var el = e.target.closest ? e.target.closest(".q") : null;
+  if (el) setQ(el.getAttribute("data-q"));
 });
 
 /* ---------- सीक बार ---------- */
