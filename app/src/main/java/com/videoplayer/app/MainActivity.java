@@ -16,6 +16,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.util.Log;
+import android.widget.Toast;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
@@ -109,8 +111,11 @@ public class MainActivity extends Activity {
     // पेज को ज़ूम / किनारे खाली होने से रोकता है
     private static final String VIEW_FIX =
             "try{var vm=document.querySelector('meta[name=viewport]');"
-            + "if(vm)vm.setAttribute('content','width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no');"
-            + "document.documentElement.style.overflowX='hidden';}catch(x){}";
+            + "if(!vm){vm=document.createElement('meta');vm.name='viewport';document.head.appendChild(vm);}"
+            + "vm.setAttribute('content','width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no');"
+            + "document.documentElement.style.overflowX='hidden';"
+            + "document.body&&(document.body.style.overflowX='hidden');"
+            + "if(window.scrollX!==0)window.scrollTo(0,window.scrollY);}catch(x){}";
 
     private static final int REQ_AUDIO = 77;
 
@@ -124,6 +129,8 @@ public class MainActivity extends Activity {
     private SpeechRecognizer recognizer;
     private FrameLayout bannerHolder;
     private BannerView banner;
+    private boolean adsReady, bannerOk;
+    private int bannerTries;
     private PermissionRequest pendingWebPerm;
     private boolean pendingStart;
     private int corner;
@@ -584,6 +591,17 @@ public class MainActivity extends Activity {
             bl.topMargin = lp.topMargin + lp.height + dp(12);
             bannerHolder.setLayoutParams(bl);
             bannerHolder.setVisibility(View.VISIBLE);
+            // बैनर तभी लोड हो जब उसकी जगह दिख रही हो (छिपी जगह में Unity बैनर लोड नहीं होता)
+            if (adsReady) {
+                if (banner == null) {
+                    loadBanner();
+                } else if (!bannerOk) {
+                    try {
+                        banner.load();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
         } else {
             bannerHolder.setVisibility(View.GONE);
         }
@@ -745,7 +763,11 @@ public class MainActivity extends Activity {
                             runOnUiThread(new Runnable() {
                                 @Override
                                 public void run() {
-                                    loadBanner();
+                                    adsReady = true;
+                                    if (bannerHolder != null
+                                            && bannerHolder.getVisibility() == View.VISIBLE) {
+                                        loadBanner();
+                                    }
                                 }
                             });
                         }
@@ -754,6 +776,15 @@ public class MainActivity extends Activity {
                         public void onInitializationFailed(
                                 UnityAds.UnityAdsInitializationError error, String message) {
                             // विज्ञापन न आए तो भी ऐप चलता रहेगा
+                            Log.e("UnityBanner", "init failed: " + message);
+                            final String why = String.valueOf(message);
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    Toast.makeText(MainActivity.this,
+                                            "Unity init fail: " + why, Toast.LENGTH_LONG).show();
+                                }
+                            });
                         }
                     });
         } catch (Throwable ignored) {
@@ -767,6 +798,7 @@ public class MainActivity extends Activity {
             banner.setListener(new BannerView.IListener() {
                 @Override
                 public void onBannerLoaded(BannerView bannerAdView) {
+                    bannerOk = true;
                 }
 
                 public void onBannerShown(BannerView bannerAdView) {
@@ -777,7 +809,24 @@ public class MainActivity extends Activity {
                 }
 
                 @Override
-                public void onBannerFailedToLoad(BannerView bannerAdView, BannerErrorInfo errorInfo) {
+                public void onBannerFailedToLoad(BannerView bannerAdView, final BannerErrorInfo errorInfo) {
+                    bannerOk = false;
+                    final String why = errorInfo == null ? "?" : String.valueOf(errorInfo.errorMessage);
+                    Log.e("UnityBanner", "banner failed: " + why);
+                    // जाँच के लिए: कारण स्क्रीन पर दिखेगा (काम करने लगे तो यह Toast हटा सकते हैं)
+                    Toast.makeText(MainActivity.this, "Banner fail: " + why, Toast.LENGTH_LONG).show();
+                    if (bannerTries < 5 && bannerHolder != null) {
+                        bannerTries++;
+                        bannerHolder.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    if (banner != null && !bannerOk) banner.load();
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                        }, 20000);
+                    }
                 }
 
                 @Override
@@ -797,20 +846,27 @@ public class MainActivity extends Activity {
         view.evaluateJavascript(VIEW_FIX, null);
     }
 
-    /** वीडियो देखकर लौटने पर YouTube का पेज दोबारा पूरी चौड़ाई में बिठाता है (किनारे खाली न रहें) */
-    private void relayoutYt() {
+    /** वीडियो देखकर / घुमाकर लौटने पर YouTube का पेज दोबारा पूरी चौड़ाई में, बाईं ओर से बिठाता है */
+    private void healYt() {
         if (ytWeb == null) return;
         ytWeb.requestLayout();
+        ytWeb.scrollTo(0, ytWeb.getScrollY());          // आड़ा खिसकाव हटाओ
+        ytWeb.evaluateJavascript(VIEW_FIX, null);       // ज़ूम 1 पर, किनारे बराबर
         ytWeb.evaluateJavascript("window.dispatchEvent(new Event('resize'));", null);
-        ytWeb.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (ytWeb != null) {
-                    ytWeb.requestLayout();
-                    ytWeb.evaluateJavascript("window.dispatchEvent(new Event('resize'));", null);
+    }
+
+    private void relayoutYt() {
+        if (ytWeb == null) return;
+        healYt();
+        int[] delays = {150, 400, 800, 1500};
+        for (int i = 0; i < delays.length; i++) {
+            ytWeb.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    healYt();
                 }
-            }
-        }, 350);
+            }, delays[i]);
+        }
     }
 
     // ------------------------------------------------------------------
