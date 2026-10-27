@@ -1,6 +1,10 @@
 package com.videoplayer.app;
 
 import android.Manifest;
+import android.animation.ObjectAnimator;
+import android.animation.PropertyValuesHolder;
+import android.view.animation.LinearInterpolator;
+import android.webkit.WebResourceError;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
@@ -243,6 +247,7 @@ public class MainActivity extends Activity {
         root.addView(ytWeb, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        buildLoadingView();
         buildShortsBanner();
         buildPlayerLayer();
         setContentView(root);
@@ -280,6 +285,12 @@ public class MainActivity extends Activity {
         ytWeb.addJavascriptInterface(new SpeechBridge(), "Speech");
         ytWeb.setWebChromeClient(new WebChromeClient() {
             @Override
+            public void onProgressChanged(WebView view, int newProgress) {
+                // पेज काफ़ी लोड हो गया तो लोडिंग स्क्रीन हटाकर तुरंत पेज दिखाओ
+                if (newProgress >= 80 && !ytLoadFailed) hideLoading();
+            }
+
+            @Override
             public void onPermissionRequest(final PermissionRequest request) {
                 runOnUiThread(new Runnable() {
                     @Override
@@ -316,14 +327,24 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                ytLoadFailed = false;
+                showLoading();
                 inject(view);
                 onYtUrl(url);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                if (!ytLoadFailed) hideLoading();
                 inject(view);
                 onYtUrl(url);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                if (request != null && request.isForMainFrame()) {
+                    showLoadError(request.getUrl().toString());
+                }
             }
 
             /** YouTube (m.) पेज बदले बिना भी URL बदलता है (Shorts में ऊपर स्वाइप) -> यहीं पकड़ में आता है */
@@ -334,9 +355,166 @@ public class MainActivity extends Activity {
         });
 
         forceLightCookie(cm);
+        showLoading();
         ytWeb.loadUrl(HOME);
         root.postDelayed(urlPoll, 1000);
         handleShare(getIntent());
+    }
+
+    // ------------------------------------------------------------------
+    // लोडिंग / नेटवर्क स्क्रीन: पेज ठीक से आने तक सुंदर स्क्रीन, काली/खाली स्क्रीन नहीं
+    // ------------------------------------------------------------------
+    private FrameLayout loadView;
+    private TextView loadTitle, loadSub, loadRetry, loadLogo;
+    private ProgressBar loadBar;
+    private ObjectAnimator loadPulse;
+    private boolean ytLoadFailed;
+    private String failedUrl;
+
+    private final Runnable loadSlow = new Runnable() {
+        @Override
+        public void run() {
+            if (loadView != null && loadView.getVisibility() == View.VISIBLE && !ytLoadFailed) {
+                loadSub.setText("नेटवर्क थोड़ा धीमा लग रहा है… कृपया रुकिए");
+                loadRetry.setVisibility(View.VISIBLE);
+            }
+        }
+    };
+
+    private final Runnable autoRetry = new Runnable() {
+        @Override
+        public void run() {
+            if (ytLoadFailed && loadView != null && loadView.getVisibility() == View.VISIBLE) {
+                retryLoad();
+            }
+        }
+    };
+
+    private void buildLoadingView() {
+        loadView = new FrameLayout(this);
+        loadView.setClickable(true);   // लोडिंग के समय पीछे के पेज पर टच न जाए
+        loadView.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0xFFFFFFFF, 0xFFFFEDEA}));
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        loadLogo = new TextView(this);
+        loadLogo.setText("▶");
+        loadLogo.setTextColor(Color.WHITE);
+        loadLogo.setTextSize(30);
+        loadLogo.setGravity(Gravity.CENTER);
+        loadLogo.setElevation(dp(6));
+        GradientDrawable lg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFFFF1A1A, 0xFFD50000});
+        lg.setCornerRadius(dp(22));
+        loadLogo.setBackground(lg);
+        col.addView(loadLogo, new LinearLayout.LayoutParams(dp(84), dp(84)));
+
+        loadTitle = new TextView(this);
+        loadTitle.setTextColor(0xFF212121);
+        loadTitle.setTextSize(19);
+        loadTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        loadTitle.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tl.topMargin = dp(26);
+        col.addView(loadTitle, tl);
+
+        loadSub = new TextView(this);
+        loadSub.setTextColor(0xFF757575);
+        loadSub.setTextSize(14);
+        loadSub.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sl.topMargin = dp(8);
+        col.addView(loadSub, sl);
+
+        loadBar = new ProgressBar(this);
+        loadBar.setIndeterminateTintList(ColorStateList.valueOf(0xFFFF0000));
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(dp(34), dp(34));
+        bl.topMargin = dp(22);
+        col.addView(loadBar, bl);
+
+        loadRetry = new TextView(this);
+        loadRetry.setText("🔄  फिर कोशिश करें");
+        loadRetry.setTextColor(Color.WHITE);
+        loadRetry.setTextSize(15);
+        loadRetry.setTypeface(Typeface.DEFAULT_BOLD);
+        loadRetry.setGravity(Gravity.CENTER);
+        loadRetry.setPadding(dp(26), dp(12), dp(26), dp(12));
+        GradientDrawable rg = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                new int[]{0xFFFF3D00, 0xFFFF9100});
+        rg.setCornerRadius(dp(24));
+        loadRetry.setBackground(rg);
+        loadRetry.setElevation(dp(4));
+        loadRetry.setVisibility(View.GONE);
+        loadRetry.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                retryLoad();
+            }
+        });
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rl.topMargin = dp(22);
+        col.addView(loadRetry, rl);
+
+        loadView.addView(col, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        root.addView(loadView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        loadPulse = ObjectAnimator.ofPropertyValuesHolder(loadLogo,
+                PropertyValuesHolder.ofFloat("scaleX", 1f, 1.14f),
+                PropertyValuesHolder.ofFloat("scaleY", 1f, 1.14f));
+        loadPulse.setDuration(700);
+        loadPulse.setRepeatCount(ObjectAnimator.INFINITE);
+        loadPulse.setRepeatMode(ObjectAnimator.REVERSE);
+        loadPulse.setInterpolator(new LinearInterpolator());
+    }
+
+    private void showLoading() {
+        if (loadView == null) return;
+        loadTitle.setText("लोड हो रहा है…");
+        loadSub.setText("नेटवर्क जाँच रहे हैं, आपका पेज तैयार हो रहा है");
+        loadBar.setVisibility(View.VISIBLE);
+        loadRetry.setVisibility(View.GONE);
+        loadView.setVisibility(View.VISIBLE);
+        if (!loadPulse.isStarted()) loadPulse.start();
+        root.removeCallbacks(autoRetry);
+        root.removeCallbacks(loadSlow);
+        root.postDelayed(loadSlow, 10000);
+    }
+
+    private void hideLoading() {
+        if (loadView == null || loadView.getVisibility() != View.VISIBLE) return;
+        root.removeCallbacks(loadSlow);
+        root.removeCallbacks(autoRetry);
+        loadPulse.cancel();
+        loadView.setVisibility(View.GONE);
+    }
+
+    private void showLoadError(String url) {
+        if (loadView == null) return;
+        ytLoadFailed = true;
+        failedUrl = url;
+        loadTitle.setText("इंटरनेट नहीं चल रहा 📡");
+        loadSub.setText("कनेक्शन जाँचिए, हम अपने-आप फिर कोशिश कर रहे हैं");
+        loadBar.setVisibility(View.GONE);
+        loadRetry.setVisibility(View.VISIBLE);
+        loadView.setVisibility(View.VISIBLE);
+        if (!loadPulse.isStarted()) loadPulse.start();
+        root.removeCallbacks(loadSlow);
+        root.removeCallbacks(autoRetry);
+        root.postDelayed(autoRetry, 5000);
+    }
+
+    private void retryLoad() {
+        ytLoadFailed = false;
+        showLoading();
+        ytWeb.loadUrl(failedUrl != null ? failedUrl : HOME);
     }
 
     private static boolean isShorts(String url) {
