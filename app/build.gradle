@@ -25,3 +25,7 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 }
+
+dependencies {
+    implementation 'com.unity3d.ads:unity-ads:4.12.2'
+}
