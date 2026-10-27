@@ -4,19 +4,27 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- सफेद बैकग्राउंड -->
     <path
         android:fillColor="#FFFFFF"
         android:pathData="M0,0h108v108h-108z" />
+    <!-- गाढ़े लाल रंग का गोल आइकन -->
     <path
-        android:fillColor="#3F51B5"
-        android:pathData="M26,14h56a12,12 0 0 1 12,12v56a12,12 0 0 1 -12,12h-56a12,12 0 0 1 -12,-12v-56a12,12 0 0 1 12,-12z" />
+        android:fillColor="#C6141E"
+        android:pathData="M54,14A40,40 0 1 1 54,94A40,40 0 1 1 54,14z" />
+    <!-- अंदर हल्की रिंग (ट्रैक) -->
+    <path
+        android:pathData="M54,23A31,31 0 1 1 54,85A31,31 0 1 1 54,23z"
+        android:strokeColor="#55FFFFFF"
+        android:strokeWidth="4" />
+    <!-- रिंग का चला हुआ हिस्सा -->
+    <path
+        android:pathData="M54,23A31,31 0 1 1 23,54"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round" />
+    <!-- सफेद प्ले त्रिकोण -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M44,32L44,62L70,47Z" />
-    <path
-        android:fillColor="#66FFFFFF"
-        android:pathData="M30,74h48v5h-48z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M30,74h26v5h-26z" />
+        android:pathData="M47,40L47,68L71,54Z" />
 </vector>
