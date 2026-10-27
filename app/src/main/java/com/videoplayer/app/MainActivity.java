@@ -22,6 +22,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Log;
 import android.widget.Toast;
@@ -248,6 +249,7 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         buildLoadingView();
+        loadView.setVisibility(View.GONE);   // ऐप खुलते समय लोडिंग नहीं
         buildShortsBanner();
         buildPlayerLayer();
         setContentView(root);
@@ -264,6 +266,16 @@ public class MainActivity extends Activity {
         startOrientationWatch();
         initAds();
         applyChrome();
+        // प्लेयर का पेज पहले से तैयार रखो (बैकग्राउंड में), ताकि वीडियो टैप पर तुरंत खुले
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    playerHtml();
+                } catch (Throwable ignored) {
+                }
+            }
+        }).start();
 
         WebSettings s = ytWeb.getSettings();
         s.setJavaScriptEnabled(true);
@@ -287,7 +299,7 @@ public class MainActivity extends Activity {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
                 // पेज काफ़ी लोड हो गया तो लोडिंग स्क्रीन हटाकर तुरंत पेज दिखाओ
-                if (newProgress >= 80 && !ytLoadFailed) hideLoading();
+                if (newProgress >= 80 && !ytLoadFailed) hideLoadingSmart();
             }
 
             @Override
@@ -328,14 +340,15 @@ public class MainActivity extends Activity {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 ytLoadFailed = false;
-                showLoading();
+                backWait = false;            // पूरा पेज लोड हो रहा है -> तैयार होने तक रुको
+                if (!firstPageLoad) showLoading();
                 inject(view);
                 onYtUrl(url);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                if (!ytLoadFailed) hideLoading();
+                if (!ytLoadFailed) hideLoadingSmart();
                 inject(view);
                 onYtUrl(url);
             }
@@ -351,11 +364,14 @@ public class MainActivity extends Activity {
             @Override
             public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
                 onYtUrl(url);
+                if (backWait) {            // YouTube ने पेज बदले बिना पीछे लौटा दिया -> जल्दी दिखाओ
+                    backWait = false;
+                    hideLoadingSmart();
+                }
             }
         });
 
         forceLightCookie(cm);
-        showLoading();
         ytWeb.loadUrl(HOME);
         root.postDelayed(urlPoll, 1000);
         handleShare(getIntent());
@@ -370,6 +386,45 @@ public class MainActivity extends Activity {
     private ObjectAnimator loadPulse;
     private boolean ytLoadFailed;
     private String failedUrl;
+    // ऐप पहली बार खुलते समय लोडिंग स्क्रीन नहीं दिखानी (सीधे ऐप दिखे)
+    private boolean firstPageLoad = true;
+    // बैक दबाने पर लोडिंग कम-से-कम इतनी देर रहे, ताकि काली स्क्रीन की झलक न दिखे
+    private static final int BACK_MIN_MS = 500;
+    private static final int BACK_MAX_MS = 1200;
+    private long holdLoadUntil;
+    private boolean backWait;   // बैक के बाद सिर्फ़ इतिहास बदला (पूरा पेज नहीं) -> जल्दी हटाओ
+
+    private final Runnable backHide = new Runnable() {
+        @Override
+        public void run() {
+            holdLoadUntil = 0;
+            backWait = false;
+            if (!ytLoadFailed) hideLoading();
+        }
+    };
+
+    /** बैक दबते ही लोडिंग दिखाओ; पेज तैयार होते ही (या अधिकतम BACK_MAX_MS बाद) हट जाएगी */
+    private void showBackLoading() {
+        showLoading();
+        holdLoadUntil = SystemClock.uptimeMillis() + BACK_MIN_MS;
+        backWait = true;
+        root.removeCallbacks(backHide);
+        root.postDelayed(backHide, BACK_MAX_MS);
+    }
+
+    /** पेज तैयार होने पर लोडिंग हटाओ (बैक वाली लोडिंग हो तो कम-से-कम समय पूरा होने के बाद) */
+    private void hideLoadingSmart() {
+        firstPageLoad = false;
+        long wait = holdLoadUntil - SystemClock.uptimeMillis();
+        if (holdLoadUntil != 0 && wait > 0) {
+            root.removeCallbacks(backHide);
+            root.postDelayed(backHide, wait);
+            return;
+        }
+        holdLoadUntil = 0;
+        root.removeCallbacks(backHide);
+        hideLoading();
+    }
 
     private final Runnable loadSlow = new Runnable() {
         @Override
@@ -823,7 +878,10 @@ public class MainActivity extends Activity {
             }
             shortsHolder.setBackgroundColor(shortsBannerShown() ? Color.WHITE : Color.TRANSPARENT);
             shortsHolder.setVisibility(View.VISIBLE);
-            if (tryLoad && shortsSlot != null) shortsSlot.load();
+            if (tryLoad && shortsSlot != null) {
+                if (!shortsSlot.ok && !shortsSlot.loading && shortsSlot.tries >= 8) shortsSlot.tries = 0;
+                shortsSlot.load();
+            }
         }
         applyYtMargin();
         if (mode == MODE_MINI) placeMini();
@@ -1139,7 +1197,7 @@ public class MainActivity extends Activity {
         if (link == null) return;
         String page;
         try {
-            page = readAsset("player.html")
+            page = playerHtml()
                     .replace("__ID__", link.id == null ? "" : link.id)
                     .replace("__LIST__", link.list == null ? "" : link.list)
                     .replace("__START__", String.valueOf(link.start));
@@ -1174,13 +1232,11 @@ public class MainActivity extends Activity {
         }
         // छोटी विंडो अब पेज के ऊपर तैरती है, नीचे जगह नहीं छोड़नी; सिर्फ़ Shorts बैनर की जगह
         applyYtMargin();
-        if (!fsOn && customView == null) {
-            setRequestedOrientation(m == MODE_FULL
-                    ? ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                    : ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        if (!fsOn && customView == null
+                && getRequestedOrientation() != ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         }
         applyChrome();
-        relayoutYt();
     }
 
     private void stopPlayer() {
@@ -1451,6 +1507,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        if (root != null) root.removeCallbacks(urlPoll);
         if (orient != null) orient.disable();
         super.onPause();
     }
@@ -1502,6 +1559,10 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (orient != null && orient.canDetectOrientation()) orient.enable();
+        if (root != null) {
+            root.removeCallbacks(urlPoll);
+            root.postDelayed(urlPoll, 1000);
+        }
         relayoutYt();
     }
 
@@ -1618,6 +1679,7 @@ public class MainActivity extends Activity {
         } else if (mode == MODE_FULL) {
             setMode(MODE_MINI);          // बैक -> वीडियो नीचे छोटा होकर चलता रहेगा
         } else if (ytWeb != null && ytWeb.canGoBack()) {
+            showBackLoading();           // काली स्क्रीन की जगह लोडिंग
             ytWeb.goBack();
         } else {
             super.onBackPressed();
@@ -1802,16 +1864,17 @@ public class MainActivity extends Activity {
     private void relayoutYt() {
         if (ytWeb == null || ytLocked) return;
         healYt();
+        root.removeCallbacks(healRun);     // पुराने बचे हुए हटाओ, ढेर न लगे
         int[] delays = {150, 400, 800, 1500};
-        for (int i = 0; i < delays.length; i++) {
-            root.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    healYt();
-                }
-            }, delays[i]);
-        }
+        for (int i = 0; i < delays.length; i++) root.postDelayed(healRun, delays[i]);
     }
+
+    private final Runnable healRun = new Runnable() {
+        @Override
+        public void run() {
+            healYt();
+        }
+    };
 
     // ------------------------------------------------------------------
     // आवाज़ से खोज (माइक)
@@ -1961,12 +2024,30 @@ public class MainActivity extends Activity {
 
     private String readAsset(String name) throws Exception {
         InputStream in = getAssets().open(name);
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        byte[] buf = new byte[4096];
-        int n;
-        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-        in.close();
-        return out.toString("UTF-8");
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            return out.toString("UTF-8");
+        } finally {
+            try {
+                in.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    // player.html एक बार ही पढ़ते हैं (टैप पर डिस्क से पढ़ने में देर लगती थी)
+    private volatile String playerHtmlCache;
+
+    private String playerHtml() throws Exception {
+        String h = playerHtmlCache;
+        if (h == null) {
+            h = readAsset("player.html");
+            playerHtmlCache = h;
+        }
+        return h;
     }
 
     private int dp(int v) {
