@@ -7,8 +7,9 @@
 html,body{margin:0;height:100%;background:#000;overflow:hidden;-webkit-tap-highlight-color:transparent;font-family:sans-serif}
 #wrap{position:fixed;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;background:#000}
 #stage{position:relative;flex:1;min-height:0;background:#000}
-#player,#player iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none}
-#shield{position:absolute;left:0;top:0;width:100%;height:100%;z-index:2;touch-action:manipulation}
+#frame{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;z-index:1}
+#player,#player iframe{position:absolute;left:0;top:-120px;width:100%;height:calc(100% + 240px);border:0;pointer-events:none}
+#shield{position:absolute;left:0;top:0;width:100%;height:100%;z-index:2;touch-action:none}
 #big{position:absolute;z-index:3;left:50%;top:50%;width:68px;height:68px;margin:-34px 0 0 -34px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:30px;border:0;padding:0;display:flex;align-items:center;justify-content:center;opacity:0;visibility:hidden;transition:opacity .2s}
 #big.on{opacity:1;visibility:visible}
 #msg{position:absolute;z-index:4;left:16px;right:16px;top:50%;transform:translateY(-50%);text-align:center;color:#fff;font-size:15px;line-height:1.5;display:none;background:rgba(0,0,0,.8);padding:14px;border-radius:12px}
@@ -33,7 +34,7 @@ body.fs.ovl #brw{display:block}
 <body>
 <div id="wrap">
   <div id="stage">
-    <div id="player"></div>
+    <div id="frame"><div id="player"></div></div>
     <div id="shield"></div>
     <button id="big"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M8 5v14l11-7z"/></svg></button>
     <div id="msg"></div>
@@ -45,10 +46,6 @@ body.fs.ovl #brw{display:block}
       <span class="t" id="tm">0:00 / 0:00</span>
       <input id="seek" type="range" min="0" max="1000" value="0">
       <button id="fs"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg></button>
-    </div>
-    <div id="r2">
-      <button class="sk" id="b10">&laquo; 10 सेकंड</button>
-      <button class="sk" id="f10">10 सेकंड &raquo;</button>
     </div>
   </div>
 </div>
@@ -94,6 +91,9 @@ function fitShield() {
   var s = $("shield").style;
   s.width = w + "px"; s.height = h + "px";
   s.left = ((W - w) / 2) + "px"; s.top = ((H - h) / 2) + "px";
+  var f = $("frame").style;
+  f.width = w + "px"; f.height = h + "px";
+  f.left = s.left; f.top = s.top;
 }
 window.addEventListener("resize", function () { fitShield(); setTimeout(fitShield, 300); });
 window.addEventListener("load", fitShield);
@@ -180,8 +180,6 @@ function skip(sec) {
   p.seekTo(n, true);
   flash(sec > 0 ? "\u00bb +10 सेकंड" : "\u00ab -10 सेकंड");
 }
-$("b10").addEventListener("click", function () { skip(-10); });
-$("f10").addEventListener("click", function () { skip(10); });
 
 /* ---------- वीडियो पर टैप: एक बार = बटन दिखे/छिपे, डबल टैप = 10 सेकंड आगे/पीछे ---------- */
 var lastTap = 0, tapTimer = null;
@@ -205,6 +203,59 @@ $("shield").addEventListener("click", function (e) {
 $("big").addEventListener("click", function () { toggle(); });
 $("pp").addEventListener("click", toggle);
 
+/* ---------- फुलस्क्रीन में दो उंगली से ज़ूम (और ज़ूम में एक उंगली से खिसकाना) ---------- */
+var zs = 1, tx = 0, ty = 0, pinch = null, pan = null;
+function applyZoom() {
+  var f = $("frame").style;
+  f.transformOrigin = "50% 50%";
+  f.transform = "translate(" + tx + "px," + ty + "px) scale(" + zs + ")";
+}
+function clampPan() {
+  var fr = $("frame");
+  var mx = (zs - 1) * fr.offsetWidth / 2, my = (zs - 1) * fr.offsetHeight / 2;
+  tx = Math.max(-mx, Math.min(mx, tx));
+  ty = Math.max(-my, Math.min(my, ty));
+}
+function resetZoom() { zs = 1; tx = 0; ty = 0; pinch = null; pan = null; applyZoom(); }
+function tdist(t) {
+  var dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+function tmid(t) { return { x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 }; }
+function inFs() { return document.body.classList.contains("fs"); }
+var sh = $("shield");
+sh.addEventListener("touchstart", function (e) {
+  if (!inFs()) return;
+  if (e.touches.length === 2) {
+    pan = null;
+    pinch = { d: tdist(e.touches), z: zs, m: tmid(e.touches), tx: tx, ty: ty };
+    e.preventDefault();
+  } else if (e.touches.length === 1 && zs > 1) {
+    pan = { x: e.touches[0].clientX, y: e.touches[0].clientY, tx: tx, ty: ty };
+  }
+}, { passive: false });
+sh.addEventListener("touchmove", function (e) {
+  if (!inFs()) return;
+  if (pinch && e.touches.length >= 2) {
+    e.preventDefault();
+    var m = tmid(e.touches);
+    zs = Math.max(1, Math.min(4, pinch.z * tdist(e.touches) / pinch.d));
+    tx = pinch.tx + (m.x - pinch.m.x);
+    ty = pinch.ty + (m.y - pinch.m.y);
+    clampPan(); applyZoom();
+  } else if (pan && e.touches.length === 1 && zs > 1) {
+    e.preventDefault();
+    tx = pan.tx + (e.touches[0].clientX - pan.x);
+    ty = pan.ty + (e.touches[0].clientY - pan.y);
+    clampPan(); applyZoom();
+  }
+}, { passive: false });
+sh.addEventListener("touchend", function (e) {
+  if (e.touches.length < 2) pinch = null;
+  if (e.touches.length === 0) pan = null;
+  if (zs < 1.05 && zs !== 1) resetZoom();
+});
+
 /* ---------- सीक बार ---------- */
 $("seek").addEventListener("input", function () {
   dragging = true;
@@ -227,6 +278,7 @@ $("br").addEventListener("input", function () {
 /* पूरा स्क्रीन ऐप खुद संभालता है (आड़ा करके, बिना बार) */
 function setFs(b) {
   document.body.classList.toggle("fs", b);
+  if (!b) resetZoom();
   if (b) showOvl(false); else hideOvl();
   setTimeout(fitShield, 100); setTimeout(fitShield, 500);
 }
