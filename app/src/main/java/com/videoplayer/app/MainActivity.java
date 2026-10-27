@@ -120,7 +120,7 @@ public class MainActivity extends Activity {
     private static final int REQ_AUDIO = 77;
 
     // Unity Ads (सिर्फ़ वीडियो प्लेयर के नीचे बैनर)
-    private static final String UNITY_GAME_ID = "800411568";
+    private static final String UNITY_GAME_ID = "800394722";
     private static final String BANNER_PLACEMENT = "BP_Banner_Android";
     // असली विज्ञापन चलाने के लिए इसे false कर दीजिए (पहले true रखकर जाँच लीजिए)
     private static final boolean UNITY_TEST_MODE = true;
