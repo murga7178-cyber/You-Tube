@@ -136,7 +136,7 @@ public class MainActivity extends Activity {
     // false = फोन घुमाने से अपने-आप फुलस्क्रीन नहीं होगा; सिर्फ़ ⛶ बटन से
     private static final boolean AUTO_ROTATE_FULLSCREEN = false;
     // true = Shorts का बैनर फेल हो तो वजह स्क्रीन पर छोटे संदेश में दिखे (जाँच के बाद false कर दें)
-    private static final boolean SHORTS_DEBUG_TOAST = true;
+    private static final boolean SHORTS_DEBUG_TOAST = false;
     // true = फुलस्क्रीन से लौटते ही YouTube पेज ताज़ा लोड होता है (प्लेयर के पीछे, दिखता नहीं)
     // ताकि वह ठीक वैसा खुले जैसा शुरू में खुलता है, बाईं तरफ़ खिसका हुआ न रहे
     private static final boolean RELOAD_YT_AFTER_FULLSCREEN = true;
