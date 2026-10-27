@@ -18,11 +18,13 @@ body.fs.ovl #bar{display:block}
 body.mini #bar{display:none !important}
 #r1,#r2{display:flex;align-items:center;gap:8px;padding:0 10px}
 #r1{height:52px}
-#r2{height:44px}
+#r2{height:44px;justify-content:center;gap:16px}
 #pp,#fs{background:none;border:0;color:#fff;font-size:22px;width:38px;height:38px;padding:0;flex:none}
 #seek,#br{flex:1;min-width:0;height:30px;margin:0}
 #seek{accent-color:#f00}
-#br{accent-color:#f5b400}
+#brw{position:absolute;left:12px;top:50%;width:40px;height:180px;margin-top:-90px;z-index:6;display:none}
+body.fs.ovl #brw{display:block}
+#br{position:absolute;width:160px;height:30px;left:-60px;top:75px;margin:0;transform:rotate(-90deg);accent-color:#fff}
 .t{flex:none;min-width:92px;text-align:center}
 .sk{background:#272727;border:0;color:#fff;border-radius:16px;height:32px;padding:0 12px;font-size:13px;flex:none}
 .ic{flex:none;font-size:18px}
@@ -33,26 +35,26 @@ body.mini #bar{display:none !important}
   <div id="stage">
     <div id="player"></div>
     <div id="shield"></div>
-    <button id="big">&#9654;</button>
+    <button id="big"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M8 5v14l11-7z"/></svg></button>
     <div id="msg"></div>
+    <div id="brw"><input id="br" type="range" min="5" max="100" value="50"></div>
   </div>
   <div id="bar">
     <div id="r1">
-      <button id="pp">&#9654;</button>
+      <button id="pp"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M8 5v14l11-7z"/></svg></button>
       <span class="t" id="tm">0:00 / 0:00</span>
       <input id="seek" type="range" min="0" max="1000" value="0">
-      <button id="fs">&#9974;</button>
+      <button id="fs"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg></button>
     </div>
     <div id="r2">
-      <button class="sk" id="b10">&#9194; 10</button>
-      <span class="ic">&#9728;</span>
-      <input id="br" type="range" min="5" max="100" value="50">
-      <button class="sk" id="f10">10 &#9193;</button>
+      <button class="sk" id="b10">&laquo; 10 सेकंड</button>
+      <button class="sk" id="f10">10 सेकंड &raquo;</button>
     </div>
   </div>
 </div>
 <script>
 var VID = "__ID__", LST = "__LIST__", ST = __START__;
+var ICON_PLAY = '<svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M8 5v14l11-7z"/></svg>', ICON_PAUSE = '<svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
 var p = null, dragging = false, mini = false, ovlTimer = null, flashUntil = 0;
 function $(i) { return document.getElementById(i); }
 function fmt(s) {
@@ -72,7 +74,8 @@ function onYouTubeIframeAPIReady() {
     origin: "https://videoplayer.app"
   };
   if (ST > 0) v.start = ST;
-  if (LST) { v.list = LST; if (!VID) v.listType = "playlist"; }
+  /* सिर्फ़ वही एक वीडियो चले: प्लेलिस्ट के आगे/पीछे वाले बटन न आएँ */
+  if (LST && !VID) { v.list = LST; v.listType = "playlist"; }
   var o = {
     host: "https://www.youtube-nocookie.com",
     playerVars: v,
@@ -108,7 +111,7 @@ function hideOvl() {
 
 function onState(e) {
   var s = e.data, playing = (s === 1 || s === 3);
-  var ic = playing ? "&#9208;" : "&#9654;";
+  var ic = playing ? ICON_PAUSE : ICON_PLAY;
   $("pp").innerHTML = ic;
   $("big").innerHTML = ic;
   if (window.Native && Native.state) Native.state(s);
@@ -159,7 +162,7 @@ function skip(sec) {
   var n = Math.max(0, c + sec);
   if (d > 0) n = Math.min(n, d - 0.5);
   p.seekTo(n, true);
-  flash(sec > 0 ? "⏩ +10 सेकंड" : "⏪ -10 सेकंड");
+  flash(sec > 0 ? "\u00bb +10 सेकंड" : "\u00ab -10 सेकंड");
 }
 $("b10").addEventListener("click", function () { skip(-10); });
 $("f10").addEventListener("click", function () { skip(10); });
