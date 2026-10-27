@@ -4,16 +4,19 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- सफेद बैकग्राउंड -->
     <path
         android:fillColor="#FFFFFF"
         android:pathData="M0,0h108v108h-108z" />
-    <!-- लाल गोल कोनों वाला प्ले बटन -->
     <path
-        android:fillColor="#FF0000"
-        android:pathData="M28,30h52a14,14 0 0 1 14,14v20a14,14 0 0 1 -14,14h-52a14,14 0 0 1 -14,-14v-20a14,14 0 0 1 14,-14z" />
-    <!-- सफेद त्रिकोण -->
+        android:fillColor="#3F51B5"
+        android:pathData="M26,14h56a12,12 0 0 1 12,12v56a12,12 0 0 1 -12,12h-56a12,12 0 0 1 -12,-12v-56a12,12 0 0 1 12,-12z" />
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M46,43L46,65L66,54Z" />
+        android:pathData="M44,32L44,62L70,47Z" />
+    <path
+        android:fillColor="#66FFFFFF"
+        android:pathData="M30,74h48v5h-48z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,74h26v5h-26z" />
 </vector>
