@@ -9,7 +9,10 @@ import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Outline;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -23,7 +26,10 @@ import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.OrientationEventListener;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.WindowManager;
@@ -68,7 +74,8 @@ public class MainActivity extends Activity {
     private static final int MINI_CARD_H = 72; // dp
     private static final int MINI_H = 88;   // dp, पूरी मिनी पट्टी
     private static final int TOP_H = 56;    // dp, बड़े प्लेयर की ऊपर वाली पट्टी
-    private static final int BAR_DP = 96;   // dp, player.html की नीचे की बार (2 पंक्तियाँ)
+    private static final int BAR_DP = 52;   // dp, player.html की नीचे की बार (1 पंक्ति)
+    private static final int MAX_BANNERS = 4; // नीचे ज़्यादा से ज़्यादा इतने बैनर
 
     // YouTube पेज के अंदर चलने वाली स्क्रिप्ट: वीडियो लिंक पर क्लिक पकड़ती है
     private static final String HOOK =
@@ -120,17 +127,41 @@ public class MainActivity extends Activity {
     private static final int REQ_AUDIO = 77;
 
     // Unity Ads (सिर्फ़ वीडियो प्लेयर के नीचे बैनर)
-    private static final String UNITY_GAME_ID = "800394722";
+    private static final String UNITY_GAME_ID = "800411568";
     private static final String BANNER_PLACEMENT = "BP_Banner_Android";
-    // असली विज्ञापन चलाने के लिए इसे false कर दीजिए (पहले true रखकर जाँच लीजिए)
-    private static final boolean UNITY_TEST_MODE = true;
+    // false = असली विज्ञापन (टेस्ट के लिए true)
+    private static final boolean UNITY_TEST_MODE = false;
 
     private int mode = MODE_NONE;
     private SpeechRecognizer recognizer;
     private FrameLayout bannerHolder;
-    private BannerView banner;
-    private boolean adsReady, bannerOk, bannerLoading;
-    private int bannerTries;
+    private LinearLayout bannerBox;
+    private boolean adsReady;
+    private final ArrayList<AdSlot> adSlots = new ArrayList<AdSlot>();
+
+    // फोन आड़ा करने पर अपने-आप फुलस्क्रीन
+    private OrientationEventListener orient;
+    private boolean fsByRotation, lastLand, rotEnterPending, rotExitPending, rotSuppress;
+    private final Runnable rotEnter = new Runnable() {
+        @Override
+        public void run() {
+            rotEnterPending = false;
+            if (lastLand && !rotSuppress && mode == MODE_FULL && !fsOn && customView == null) {
+                fsByRotation = true;
+                setFullscreen(true);
+            }
+        }
+    };
+    private final Runnable rotExit = new Runnable() {
+        @Override
+        public void run() {
+            rotExitPending = false;
+            if (!lastLand && fsOn && fsByRotation) {
+                fsByRotation = false;
+                setFullscreen(false);
+            }
+        }
+    };
     private PermissionRequest pendingWebPerm;
     private boolean pendingStart;
     private int corner;
@@ -188,6 +219,7 @@ public class MainActivity extends Activity {
 
         buildPlayerLayer();
         setContentView(root);
+        startOrientationWatch();
         initAds();
         applyChrome();
 
@@ -331,6 +363,22 @@ public class MainActivity extends Activity {
         });
         top.addView(close, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
+        View spacer = new View(this);
+        top.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+
+        // दाएँ कोने में होम: एक कदम पीछे -> प्लेयर नीचे छोटा, YouTube का पेज खुल जाए
+        HomeIcon home = new HomeIcon(this);
+        GradientDrawable circle2 = new GradientDrawable();
+        circle2.setShape(GradientDrawable.OVAL);
+        circle2.setColor(0x33FFFFFF);
+        home.setBackground(circle2);
+        home.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setMode(MODE_MINI);
+            }
+        });
+        top.addView(home, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         fullBg.addView(top, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(TOP_H), Gravity.TOP));
@@ -420,6 +468,11 @@ public class MainActivity extends Activity {
         bannerHolder.setVisibility(View.GONE);
         playerLayer.addView(bannerHolder, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(60), Gravity.TOP));
+        bannerBox = new LinearLayout(this);
+        bannerBox.setOrientation(LinearLayout.VERTICAL);
+        bannerBox.setGravity(Gravity.CENTER_HORIZONTAL);
+        bannerHolder.addView(bannerBox, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         // मिनी में वीडियो पर टैप -> फिर बड़ा
         miniTap = new View(this);
@@ -522,6 +575,11 @@ public class MainActivity extends Activity {
         FrameLayout.LayoutParams yl = (FrameLayout.LayoutParams) ytWeb.getLayoutParams();
         yl.bottomMargin = (m == MODE_MINI) ? dp(MINI_H) : 0;
         ytWeb.setLayoutParams(yl);
+        if (!fsOn && customView == null) {
+            setRequestedOrientation(m == MODE_FULL
+                    ? ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        }
         applyChrome();
         relayoutYt();
     }
@@ -560,10 +618,13 @@ public class MainActivity extends Activity {
                             | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
         } else {
+            if (lastLand) rotSuppress = true;
             a.layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
             getWindow().setAttributes(a);
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+            setRequestedOrientation(mode == MODE_FULL
+                    ? ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
             ytWeb.postDelayed(unlockRun, 1500);   // पक्का: 1.5 सेकंड में साइज़ खोल दो
         }
         fullBg.setVisibility((!on && mode == MODE_FULL) ? View.VISIBLE : View.GONE);
@@ -573,6 +634,135 @@ public class MainActivity extends Activity {
         applyChrome();
         pWeb.evaluateJavascript("setFs(" + on + ")", null);
         relayoutYt();
+    }
+
+    /** होम का चित्र (छत, दीवार, दरवाज़ा) */
+    private static class HomeIcon extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path path = new Path();
+
+        HomeIcon(Context c) {
+            super(c);
+            paint.setColor(Color.WHITE);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            float u = getWidth() / 40f;
+            paint.setStrokeWidth(2.2f * u);
+            path.reset();
+            path.moveTo(10 * u, 21 * u);
+            path.lineTo(20 * u, 12 * u);
+            path.lineTo(30 * u, 21 * u);
+            path.moveTo(13 * u, 19 * u);
+            path.lineTo(13 * u, 29 * u);
+            path.lineTo(27 * u, 29 * u);
+            path.lineTo(27 * u, 19 * u);
+            path.moveTo(18 * u, 29 * u);
+            path.lineTo(18 * u, 23 * u);
+            path.lineTo(22 * u, 23 * u);
+            path.lineTo(22 * u, 29 * u);
+            canvas.drawPath(path, paint);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // वीडियो को उंगली से नीचे खींचना -> छोटा होकर नीचे चिपक जाए (एक कदम पीछे)
+    // ------------------------------------------------------------------
+    private boolean dragCand, dragging;
+    private float dragX0, dragY0, dragDy;
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (card != null && mode == MODE_FULL && !fsOn && customView == null
+                && playerLayer.getVisibility() == View.VISIBLE && handleDrag(ev)) {
+            return true;
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
+    private boolean handleDrag(MotionEvent ev) {
+        int a = ev.getActionMasked();
+        if (a == MotionEvent.ACTION_DOWN) {
+            dragging = false;
+            int[] loc = new int[2];
+            card.getLocationOnScreen(loc);
+            float x = ev.getRawX(), y = ev.getRawY();
+            int videoH = card.getHeight() - dp(BAR_DP);   // सिर्फ़ वीडियो वाला हिस्सा
+            dragCand = x >= loc[0] && x <= loc[0] + card.getWidth()
+                    && y >= loc[1] && y <= loc[1] + videoH;
+            dragX0 = x;
+            dragY0 = y;
+            return false;
+        }
+        if (!dragCand && !dragging) return false;
+        if (a == MotionEvent.ACTION_POINTER_DOWN && !dragging) {
+            dragCand = false;
+            return false;
+        }
+        if (a == MotionEvent.ACTION_MOVE) {
+            float dy = ev.getRawY() - dragY0, dx = ev.getRawX() - dragX0;
+            if (!dragging) {
+                int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+                if (dy > slop * 2 && dy > Math.abs(dx) * 1.5f) {
+                    dragging = true;
+                    MotionEvent c = MotionEvent.obtain(ev);
+                    c.setAction(MotionEvent.ACTION_CANCEL);
+                    super.dispatchTouchEvent(c);   // वीडियो पेज का टच रद्द
+                    c.recycle();
+                    card.setPivotX(card.getWidth() / 2f);
+                    card.setPivotY(0f);
+                } else {
+                    if (Math.abs(dx) > slop * 2 || dy < -slop * 2) dragCand = false;
+                    return false;
+                }
+            }
+            dragDy = Math.max(0f, dy);
+            applyDrag(dragDy);
+            return true;
+        }
+        if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
+            boolean was = dragging;
+            dragging = false;
+            dragCand = false;
+            if (!was) return false;
+            if (a == MotionEvent.ACTION_UP && dragDy > dp(110)) {
+                resetDragViews();
+                setMode(MODE_MINI);
+            } else {
+                card.animate().translationY(0f).scaleX(1f).scaleY(1f).setDuration(180).start();
+                fullBg.animate().alpha(1f).setDuration(180).start();
+                bannerHolder.animate().alpha(1f).translationY(0f).setDuration(180).start();
+            }
+            return true;
+        }
+        return dragging;
+    }
+
+    private void applyDrag(float dy) {
+        float p = Math.min(1f, dy / dp(260));
+        float sc = 1f - 0.4f * p;
+        card.setTranslationY(dy * 0.9f);
+        card.setScaleX(sc);
+        card.setScaleY(sc);
+        fullBg.setAlpha(1f - p);
+        bannerHolder.setTranslationY(dy);
+        bannerHolder.setAlpha(Math.max(0f, 1f - p * 1.5f));
+    }
+
+    private void resetDragViews() {
+        card.animate().cancel();
+        fullBg.animate().cancel();
+        bannerHolder.animate().cancel();
+        card.setTranslationY(0f);
+        card.setScaleX(1f);
+        card.setScaleY(1f);
+        fullBg.setAlpha(1f);
+        bannerHolder.setAlpha(1f);
+        bannerHolder.setTranslationY(0f);
     }
 
     private void applyCardLayout() {
@@ -602,22 +792,21 @@ public class MainActivity extends Activity {
         boolean portrait = getResources().getConfiguration().orientation
                 != Configuration.ORIENTATION_LANDSCAPE;
         if (!fsOn && mode == MODE_FULL && portrait) {
+            int rootH = root.getHeight();
+            if (rootH <= 0) rootH = getResources().getDisplayMetrics().heightPixels;
+            int top = lp.topMargin + lp.height + dp(12);
+            int slotH = dp(58);
+            int n = (rootH - top - dp(12)) / slotH;
+            n = Math.max(1, Math.min(MAX_BANNERS, n));
             FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(60), Gravity.TOP);
-            bl.topMargin = lp.topMargin + lp.height + dp(12);
+                    ViewGroup.LayoutParams.MATCH_PARENT, n * slotH, Gravity.TOP);
+            bl.topMargin = top;
             bannerHolder.setLayoutParams(bl);
             bannerHolder.setVisibility(View.VISIBLE);
-            // बैनर तभी लोड हो जब उसकी जगह दिख रही हो (छिपी जगह में Unity बैनर लोड नहीं होता)
+            // बैनर तभी लोड हों जब उनकी जगह दिख रही हो
             if (adsReady) {
-                if (banner == null) {
-                    loadBanner();
-                } else if (!bannerOk && !bannerLoading) {
-                    try {
-                        bannerLoading = true;
-                        banner.load();
-                    } catch (Throwable ignored) {
-                    }
-                }
+                ensureSlots(n);
+                loadSlots(n);
             }
         } else {
             bannerHolder.setVisibility(View.GONE);
@@ -652,8 +841,57 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        if (orient != null) orient.disable();
+        super.onPause();
+    }
+
+    /** फोन आड़ा करो -> फुलस्क्रीन बटन दबाने जैसा; वापस सीधा करो -> बाहर */
+    private void startOrientationWatch() {
+        orient = new OrientationEventListener(this) {
+            @Override
+            public void onOrientationChanged(int deg) {
+                if (deg == ORIENTATION_UNKNOWN || root == null) return;
+                boolean land = (deg >= 60 && deg <= 120) || (deg >= 240 && deg <= 300);
+                boolean port = deg <= 30 || deg >= 330;
+                lastLand = land;
+                if (land) {
+                    if (rotExitPending) {
+                        root.removeCallbacks(rotExit);
+                        rotExitPending = false;
+                    }
+                    if (mode == MODE_FULL && !fsOn && !rotSuppress && !rotEnterPending) {
+                        rotEnterPending = true;
+                        root.postDelayed(rotEnter, 500);
+                    }
+                } else if (port) {
+                    rotSuppress = false;
+                    if (rotEnterPending) {
+                        root.removeCallbacks(rotEnter);
+                        rotEnterPending = false;
+                    }
+                    if (fsOn && fsByRotation && !rotExitPending) {
+                        rotExitPending = true;
+                        root.postDelayed(rotExit, 500);
+                    }
+                } else {
+                    if (rotEnterPending) {
+                        root.removeCallbacks(rotEnter);
+                        rotEnterPending = false;
+                    }
+                    if (rotExitPending) {
+                        root.removeCallbacks(rotExit);
+                        rotExitPending = false;
+                    }
+                }
+            }
+        };
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
+        if (orient != null && orient.canDetectOrientation()) orient.enable();
         relayoutYt();
     }
 
@@ -713,6 +951,7 @@ public class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
+                    fsByRotation = false;
                     setFullscreen(on);
                 }
             });
@@ -775,6 +1014,96 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------
     // Unity Ads बैनर
     // ------------------------------------------------------------------
+    /** एक बैनर की जगह: उसका व्यू और उसकी अपनी लोड-स्थिति */
+    private class AdSlot {
+        BannerView view;
+        boolean ok, loading;
+        int tries;
+
+        void load() {
+            if (view == null || ok || loading || !adsReady) return;
+            loading = true;
+            try {
+                view.load();
+            } catch (Throwable t) {
+                loading = false;
+            }
+        }
+    }
+
+    private AdSlot makeSlot() {
+        final AdSlot slot = new AdSlot();
+        try {
+            slot.view = new BannerView(this, BANNER_PLACEMENT, new UnityBannerSize(320, 50));
+        } catch (Throwable t) {
+            return null;
+        }
+        slot.view.setListener(new BannerView.IListener() {
+            @Override
+            public void onBannerLoaded(BannerView bannerAdView) {
+                slot.ok = true;
+                slot.loading = false;
+            }
+
+            public void onBannerShown(BannerView bannerAdView) {
+            }
+
+            @Override
+            public void onBannerClick(BannerView bannerAdView) {
+            }
+
+            @Override
+            public void onBannerFailedToLoad(BannerView bannerAdView, BannerErrorInfo errorInfo) {
+                slot.ok = false;
+                slot.loading = false;
+                Log.e("UnityBanner", "banner failed: "
+                        + (errorInfo == null ? "?" : String.valueOf(errorInfo.errorMessage)));
+                if (slot.tries < 8 && slot.view != null) {
+                    slot.tries++;
+                    slot.view.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            slot.load();
+                        }
+                    }, 30000);
+                }
+            }
+
+            @Override
+            public void onBannerLeftApplication(BannerView bannerAdView) {
+            }
+        });
+        return slot;
+    }
+
+    /** ज़रूरत भर बैनर बनाता है और बाकी को छिपा देता है */
+    private void ensureSlots(int n) {
+        while (adSlots.size() < n) {
+            AdSlot s = makeSlot();
+            if (s == null) break;
+            adSlots.add(s);
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(320), dp(50));
+            p.bottomMargin = dp(8);
+            bannerBox.addView(s.view, p);
+        }
+        for (int i = 0; i < adSlots.size(); i++) {
+            adSlots.get(i).view.setVisibility(i < n ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    /** एक साथ सब नहीं: हर बैनर थोड़े अंतर पर लोड होता है (एक साथ लोड से टाइमआउट आता है) */
+    private void loadSlots(int n) {
+        for (int i = 0; i < n && i < adSlots.size(); i++) {
+            final AdSlot s = adSlots.get(i);
+            bannerHolder.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    s.load();
+                }
+            }, i * 900L);
+        }
+    }
+
     private void initAds() {
         try {
             UnityAds.initialize(getApplicationContext(), UNITY_GAME_ID, UNITY_TEST_MODE,
@@ -785,10 +1114,7 @@ public class MainActivity extends Activity {
                                 @Override
                                 public void run() {
                                     adsReady = true;
-                                    if (bannerHolder != null
-                                            && bannerHolder.getVisibility() == View.VISIBLE) {
-                                        loadBanner();
-                                    }
+                                    if (card != null && mode != MODE_NONE) applyCardLayout();
                                 }
                             });
                         }
@@ -798,71 +1124,8 @@ public class MainActivity extends Activity {
                                 UnityAds.UnityAdsInitializationError error, String message) {
                             // विज्ञापन न आए तो भी ऐप चलता रहेगा
                             Log.e("UnityBanner", "init failed: " + message);
-                            final String why = String.valueOf(message);
-                            runOnUiThread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    Toast.makeText(MainActivity.this,
-                                            "Unity init fail: " + why, Toast.LENGTH_LONG).show();
-                                }
-                            });
                         }
                     });
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private void loadBanner() {
-        try {
-            if (banner != null) return;
-            banner = new BannerView(this, BANNER_PLACEMENT, new UnityBannerSize(320, 50));
-            banner.setListener(new BannerView.IListener() {
-                @Override
-                public void onBannerLoaded(BannerView bannerAdView) {
-                    bannerOk = true;
-                    bannerLoading = false;
-                }
-
-                public void onBannerShown(BannerView bannerAdView) {
-                }
-
-                @Override
-                public void onBannerClick(BannerView bannerAdView) {
-                }
-
-                @Override
-                public void onBannerFailedToLoad(BannerView bannerAdView, final BannerErrorInfo errorInfo) {
-                    bannerOk = false;
-                    bannerLoading = false;
-                    final String why = errorInfo == null ? "?" : String.valueOf(errorInfo.errorMessage);
-                    Log.e("UnityBanner", "banner failed: " + why);
-                    // जाँच के लिए: कारण स्क्रीन पर दिखेगा (काम करने लगे तो यह Toast हटा सकते हैं)
-                    Toast.makeText(MainActivity.this, "Banner fail: " + why, Toast.LENGTH_LONG).show();
-                    if (bannerTries < 8 && bannerHolder != null) {
-                        bannerTries++;
-                        bannerHolder.postDelayed(new Runnable() {
-                            @Override
-                            public void run() {
-                                try {
-                                    if (banner != null && !bannerOk && !bannerLoading) {
-                                        bannerLoading = true;
-                                        banner.load();
-                                    }
-                                } catch (Throwable ignored) {
-                                }
-                            }
-                        }, 30000);
-                    }
-                }
-
-                @Override
-                public void onBannerLeftApplication(BannerView bannerAdView) {
-                }
-            });
-            bannerHolder.addView(banner, new FrameLayout.LayoutParams(
-                    dp(320), dp(50), Gravity.CENTER));
-            bannerLoading = true;
-            banner.load();
         } catch (Throwable ignored) {
         }
     }
@@ -1084,13 +1347,13 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        if (banner != null) {
+        for (AdSlot a : adSlots) {
             try {
-                banner.destroy();
+                if (a.view != null) a.view.destroy();
             } catch (Throwable ignored) {
             }
-            banner = null;
         }
+        adSlots.clear();
         if (recognizer != null) {
             recognizer.destroy();
             recognizer = null;
