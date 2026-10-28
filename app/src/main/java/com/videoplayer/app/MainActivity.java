@@ -4,10 +4,16 @@ import android.Manifest;
 import android.animation.ObjectAnimator;
 import android.animation.PropertyValuesHolder;
 import android.view.animation.LinearInterpolator;
+import android.view.animation.AccelerateDecelerateInterpolator;
 import android.webkit.WebResourceError;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
+import android.app.PendingIntent;
+import android.app.RemoteAction;
+import android.graphics.drawable.Icon;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
@@ -17,6 +23,7 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -58,12 +65,14 @@ import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.ImageView;
 import android.widget.Switch;
 import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Random;
 import com.unity3d.ads.IUnityAdsInitializationListener;
 import com.unity3d.ads.IUnityAdsLoadListener;
 import com.unity3d.ads.IUnityAdsShowListener;
@@ -75,6 +84,7 @@ import com.unity3d.services.banners.UnityBannerSize;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -99,6 +109,12 @@ public class MainActivity extends Activity {
     private static final int SHORTS_BANNER_H = 50; // dp, Shorts के सबसे नीचे वाला बैनर
     private static final int TOP_H = 56;    // dp, बड़े प्लेयर की ऊपर वाली पट्टी
     private static final int BAR_DP = 52;   // dp, player.html की नीचे की बार (1 पंक्ति)
+    // ऐप खुलने के बाद इतने गाने मुफ़्त; उसके बाद म्यूज़िक स्विच बंद, रिवॉर्डेड पूरा देखने पर ही फिर चालू
+    private static final int FREE_SONGS = 10;
+    private static final int MUSIC_BAR_H = 64;   // dp, म्यूज़िक मोड में नीचे वाले ऑडियो प्लेयर बार की ऊँचाई
+    // true = म्यूज़िक मोड ऑन हो तो YouTube पेज से गाना चलाने पर सीधे नीचे ऑडियो बार में चलेगा
+    // (false = पहले बड़ा प्लेयर खुलेगा, बैक करने पर नीचे बार बनेगा)
+    private static final boolean MUSIC_OPEN_AS_BAR = true;
     private static final int MAX_BANNERS = 4; // नीचे ज़्यादा से ज़्यादा इतने बैनर
 
     // YouTube पेज के अंदर चलने वाली स्क्रिप्ट: वीडियो लिंक पर क्लिक पकड़ती है
@@ -275,6 +291,8 @@ public class MainActivity extends Activity {
         loadView.setVisibility(View.GONE);   // ऐप खुलते समय लोडिंग नहीं
         buildShortsBanner();
         buildPlayerLayer();
+        bindMusicControls();
+        registerPipReceiver();
         setContentView(root);
         root.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
             @Override
@@ -615,10 +633,13 @@ public class MainActivity extends Activity {
                 rewShowing = false;
                 boolean wasWave = waveAfterReward;
                 waveAfterReward = false;
+                boolean wasMusic = musicAfterReward;
+                musicAfterReward = false;
                 if (done) {
                     rewardedDone = true;
                     updateRewBtn();
                     if (wasWave && waveSwitch != null) waveSwitch.setChecked(true);
+                    if (wasMusic && musicSwitch != null) musicSwitch.setChecked(true);
                 } else {
                     loadRewarded();                       // अगली बार के लिए
                 }
@@ -778,7 +799,10 @@ public class MainActivity extends Activity {
     }
 
     private int ytBottomMargin() {
-        return shortsBannerShown() ? dp(SHORTS_BANNER_H) : 0;
+        int b = shortsBannerShown() ? dp(SHORTS_BANNER_H) : 0;
+        // नीचे ऑडियो बार हो तो YouTube पेज उसके ऊपर तक ही रहे (बार पेज को ढके नहीं)
+        if (mode == MODE_MINI && musicOn && !inPip) b = Math.max(b, dp(MUSIC_BAR_H));
+        return b;
     }
 
     private void applyYtMargin() {
@@ -827,7 +851,7 @@ public class MainActivity extends Activity {
     // छोटी तैरती विंडो: जहाँ छोड़ो वहीं रहती है
     // ------------------------------------------------------------------
     private void placeMini() {
-        if (card == null || miniBox == null) return;
+        if (card == null || miniBox == null || musicOn) return;
         int rw = root.getWidth() > 0 ? root.getWidth()
                 : getResources().getDisplayMetrics().widthPixels;
         int rh = root.getHeight() > 0 ? root.getHeight()
@@ -1130,6 +1154,7 @@ public class MainActivity extends Activity {
         playerLayer.addView(miniBox, new FrameLayout.LayoutParams(
                 dp(MINI_W), dp(MINI_CARD_H), Gravity.TOP | Gravity.LEFT));
         buildFsNotice();
+        buildMusicBar();
         buildComments();
 
         root.addView(playerLayer, new FrameLayout.LayoutParams(
@@ -1203,9 +1228,31 @@ public class MainActivity extends Activity {
         spinner.removeCallbacks(hideSpinner);
         spinner.postDelayed(hideSpinner, 8000);
         miniPp.setText("❚❚");
+        // म्यूज़िक मोड में मुफ़्त गाने गिनो; सीमा पूरी तो स्विच बंद + रिवॉर्डेड
+        if (musicOn && !rewardedDone) {
+            if (songCount >= FREE_SONGS) musicGateTrip(); else songCount++;
+        }
+        // म्यूज़िक बार / अगला-गाना की तैयारी
+        errStreak = 0;
+        curTitle = "";
+        lastPos = 0;
+        lastDur = 0;
+        if (link.id != null && link.id.length() > 0) {
+            curId = link.id;
+            markPlayed(link.id);
+            loadThumb(link.id);
+        }
+        if (mbTitle != null) mbTitle.setText("लोड हो रहा है…");
+        if (mbProg != null) mbProg.setScaleX(0f);
+        harvestPool(null);   // इस पेज के बाकी वीडियो/गाने "अगला" के लिए जमा करो
         pWeb.loadDataWithBaseURL("https://videoplayer.app/", page, "text/html", "utf-8", null);
         // छोटी विंडो खुली हो तो नया वीडियो उसी में चले; वरना बड़ा प्लेयर
-        if (mode != MODE_MINI) setMode(MODE_FULL);
+        if (mode == MODE_NONE) {
+            // म्यूज़िक मोड ऑन: गाना सीधे नीचे ऑडियो बार में; वरना बड़ा वीडियो प्लेयर
+            setMode((musicOn && MUSIC_OPEN_AS_BAR) ? MODE_MINI : MODE_FULL);
+        } else if (mode != MODE_MINI) {
+            setMode(MODE_FULL);
+        }
     }
 
     private void setMode(int m) {
@@ -1220,8 +1267,12 @@ public class MainActivity extends Activity {
             playerLayer.setLayoutParams(new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             fullBg.setVisibility(m == MODE_FULL ? View.VISIBLE : View.GONE);
-            miniBox.setVisibility(m == MODE_MINI ? View.VISIBLE : View.GONE);
-            corner = (m == MODE_MINI) ? dp(12) : dp(16);
+            // म्यूज़िक मोड + मिनिमाइज़ = छोटी वीडियो विंडो नहीं, नीचे ऑडियो प्लेयर बार
+            boolean asBar = (m == MODE_MINI && musicOn);
+            miniBox.setVisibility((m == MODE_MINI && !asBar) ? View.VISIBLE : View.GONE);
+            musicBar.setVisibility(asBar ? View.VISIBLE : View.GONE);
+            card.setAlpha(asBar ? 0.01f : 1f);   // वीडियो अदृश्य, पर चलता रहे (आवाज़ के लिए)
+            corner = asBar ? 0 : ((m == MODE_MINI) ? dp(12) : dp(16));
             card.invalidateOutline();
             applyCardLayout();
             pWeb.evaluateJavascript("setMini(" + (m == MODE_MINI) + ")", null);
@@ -1442,6 +1493,10 @@ public class MainActivity extends Activity {
         if (fsOn || inPip) {
             lp = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        } else if (mode == MODE_MINI && musicOn) {
+            // ऑडियो बार के ठीक पीछे (अदृश्य), ताकि वेबव्यू चलता रहे पर टच न ले
+            lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(MUSIC_BAR_H),
+                    Gravity.BOTTOM | Gravity.LEFT);
         } else if (mode == MODE_MINI) {
             lp = new FrameLayout.LayoutParams(dp(MINI_W), dp(MINI_CARD_H), Gravity.TOP | Gravity.LEFT);
         } else if (getResources().getConfiguration().orientation
@@ -1456,7 +1511,7 @@ public class MainActivity extends Activity {
             lp.gravity = Gravity.TOP;
         }
         card.setLayoutParams(lp);
-        if (mode == MODE_MINI && !fsOn && !inPip) {
+        if (mode == MODE_MINI && !musicOn && !fsOn && !inPip) {
             placeMini();
         } else if (!dragging) {
             card.setTranslationX(0f);
@@ -2070,6 +2125,11 @@ public class MainActivity extends Activity {
 
     private void setMusic(boolean on) {
         if (on == musicOn) return;
+        if (on && !rewardedDone && songCount >= FREE_SONGS) {   // मुफ़्त गाने पूरे
+            if (musicSwitch != null) musicSwitch.setChecked(false);
+            showMusicGate();
+            return;
+        }
         musicOn = on;
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(PREF_MUSIC, on).apply();
         if (pWeb != null) pWeb.evaluateJavascript("window.setMusic&&setMusic(" + on + ")", null);
@@ -2079,14 +2139,395 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_NOTIF);
         }
         updateMusicService();
+        if (!on && mode == MODE_MINI) setMode(MODE_MINI);   // नीचे का ऑडियो बार -> छोटी वीडियो विंडो
         Toast.makeText(this, on ? "🎵 म्यूज़िक मोड चालू: थंबनेल दिखेगा, गाना बजेगा"
                 : "🎵 म्यूज़िक मोड बंद", Toast.LENGTH_SHORT).show();
+    }
+
+    // ------------------------------------------------------------------
+    // 🎵 म्यूज़िक मोड: नीचे ऑडियो प्लेयर बार, "अगला गाना", नोटिफ़िकेशन / लॉक-स्क्रीन के बटन
+    // ------------------------------------------------------------------
+    private FrameLayout musicBar;
+    private ImageView mbThumb;
+    private TextView mbTitle, mbPp;
+    private View mbProg;
+    private String curTitle = "", curId = "", thumbFor = "";
+    private double lastPos, lastDur;
+    private int errStreak;
+    private final ArrayList<String> pool = new ArrayList<String>();     // पेज से जमा किए वीडियो-id
+    private final ArrayList<String> played = new ArrayList<String>();   // चल चुके
+    private final Random rnd = new Random();
+
+    private TextView barBtn(String t, int sp, View.OnClickListener l) {
+        TextView b = new TextView(this);
+        b.setText(t);
+        b.setTextColor(Color.WHITE);
+        b.setTextSize(sp);
+        b.setGravity(Gravity.CENTER);
+        b.setOnClickListener(l);
+        return b;
+    }
+
+    private void buildMusicBar() {
+        musicBar = new FrameLayout(this);
+        musicBar.setVisibility(View.GONE);
+        musicBar.setClickable(true);       // बार पर टच पीछे के पेज तक न जाए
+        musicBar.setElevation(dp(14));     // card (8dp) से ऊपर
+        musicBar.setBackgroundColor(0xFF1E1E1E);
+        musicBar.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setMode(MODE_FULL);        // बार पर टैप -> बड़ा प्लेयर
+            }
+        });
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(8), 0, dp(4), 0);
+
+        mbThumb = new ImageView(this);
+        mbThumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        mbThumb.setBackgroundColor(0xFF333333);
+        mbThumb.setOutlineProvider(new ViewOutlineProvider() {
+            @Override
+            public void getOutline(View view, Outline outline) {
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), dp(8));
+            }
+        });
+        mbThumb.setClipToOutline(true);
+        row.addView(mbThumb, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        mbTitle = new TextView(this);
+        mbTitle.setTextColor(Color.WHITE);
+        mbTitle.setTextSize(14);
+        mbTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        mbTitle.setSingleLine(true);
+        mbTitle.setEllipsize(TextUtils.TruncateAt.END);
+        mbTitle.setText("लोड हो रहा है…");
+        col.addView(mbTitle);
+        TextView sub = new TextView(this);
+        sub.setTextColor(0xFFAAAAAA);
+        sub.setTextSize(12);
+        sub.setSingleLine(true);
+        sub.setText("🎵 म्यूज़िक मोड");
+        col.addView(sub);
+        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        cl.leftMargin = dp(10);
+        cl.rightMargin = dp(4);
+        row.addView(col, cl);
+
+        mbPp = barBtn("▶\uFE0E", 22, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (pWeb != null) pWeb.evaluateJavascript("toggle()", null);
+            }
+        });
+        row.addView(mbPp, new LinearLayout.LayoutParams(dp(46), dp(48)));
+        row.addView(barBtn("⏭\uFE0E", 22, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                playNext();
+            }
+        }), new LinearLayout.LayoutParams(dp(46), dp(48)));
+        row.addView(barBtn("✕", 18, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                stopPlayer();
+            }
+        }), new LinearLayout.LayoutParams(dp(42), dp(48)));
+
+        musicBar.addView(row, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        mbProg = new View(this);                 // ऊपर पतली लाल प्रोग्रेस रेखा
+        mbProg.setBackgroundColor(0xFFFF0000);
+        mbProg.setPivotX(0f);
+        mbProg.setScaleX(0f);
+        musicBar.addView(mbProg, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(2), Gravity.TOP));
+
+        playerLayer.addView(musicBar, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(MUSIC_BAR_H), Gravity.BOTTOM));
+    }
+
+    /** नोटिफ़िकेशन / लॉक-स्क्रीन / हेडसेट के बटन -> प्लेयर */
+    private void bindMusicControls() {
+        MusicService.controls = new MusicService.Controls() {
+            @Override
+            public void onPlayPause() {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (pWeb != null) pWeb.evaluateJavascript("toggle()", null);
+                    }
+                });
+            }
+
+            @Override
+            public void onNext() {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        playNext();
+                    }
+                });
+            }
+
+            @Override
+            public void onClose() {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        stopPlayer();
+                    }
+                });
+            }
+
+            @Override
+            public void onSeek(final long ms) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (pWeb != null) {
+                            pWeb.evaluateJavascript("try{p.seekTo(" + (ms / 1000.0) + ",true)}catch(e){}", null);
+                        }
+                    }
+                });
+            }
+        };
+    }
+
+    private void fillMusicStatics() {
+        MusicService.title = curTitle.length() > 0 ? curTitle : "गाना लोड हो रहा है…";
+        MusicService.playing = vidPlaying;
+        MusicService.posMs = (long) (lastPos * 1000);
+        MusicService.durMs = (long) (lastDur * 1000);
+    }
+
+    /** नाम / चल-रुक / थंबनेल बदलने पर नोटिफ़िकेशन ताज़ा करो */
+    private void pushMusic() {
+        if (!musicOn || mode == MODE_NONE) return;
+        fillMusicStatics();
+        MusicService.refresh();
+    }
+
+    private void markPlayed(String id) {
+        played.remove(id);
+        played.add(id);
+        if (played.size() > 100) played.remove(0);
+    }
+
+    private void addPool(String id) {
+        if (id == null || id.length() != 11 || pool.contains(id)) return;
+        pool.add(id);
+        if (pool.size() > 300) pool.remove(0);
+    }
+
+    private void loadThumb(final String id) {
+        if (id == null || id.length() == 0 || id.equals(thumbFor)) return;
+        thumbFor = id;
+        MusicService.art = null;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                Bitmap bm = null;
+                HttpURLConnection c = null;
+                try {
+                    c = (HttpURLConnection) new URL("https://i.ytimg.com/vi/" + id + "/mqdefault.jpg")
+                            .openConnection();
+                    c.setConnectTimeout(8000);
+                    c.setReadTimeout(8000);
+                    InputStream in = c.getInputStream();
+                    bm = BitmapFactory.decodeStream(in);
+                    in.close();
+                } catch (Throwable ignored) {
+                } finally {
+                    if (c != null) c.disconnect();
+                }
+                final Bitmap fb = bm;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (fb == null || !id.equals(thumbFor)) return;
+                        if (mbThumb != null) mbThumb.setImageBitmap(fb);
+                        MusicService.art = fb;
+                        pushMusic();
+                    }
+                });
+            }
+        }).start();
+    }
+
+    // YouTube पेज पर दिख रहे सारे वीडियो-लिंक (होम / सर्च) -> "अगला" के लिए उम्मीदवार
+    private static final String HARVEST_JS =
+            "(function(){var r=[],s={};try{document.querySelectorAll('a[href]').forEach(function(a){"
+            + "try{var u=new URL(a.href);if(/youtube\\.com$/.test(u.hostname)&&u.pathname==='/watch'){"
+            + "var v=u.searchParams.get('v');if(v&&v.length===11&&!s[v]){s[v]=1;r.push(v);}}}catch(e){}});}"
+            + "catch(e){}return JSON.stringify(r);})()";
+
+    private void harvestPool(final Runnable after) {
+        final WebView w = ytWeb;
+        if (w == null || ytLocked) {
+            if (after != null) after.run();
+            return;
+        }
+        try {
+            w.evaluateJavascript(HARVEST_JS, new android.webkit.ValueCallback<String>() {
+                @Override
+                public void onReceiveValue(String v) {
+                    try {
+                        Object o = new JSONTokener(v).nextValue();
+                        if (o instanceof String) {
+                            JSONArray a = new JSONArray((String) o);
+                            for (int i = 0; i < a.length(); i++) addPool(a.optString(i));
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                    if (after != null) after.run();
+                }
+            });
+        } catch (Throwable t) {
+            if (after != null) after.run();
+        }
+    }
+
+    /** म्यूज़िक मोड: बिना चले हुए में से रैंडम; वीडियो मोड: पेज के क्रम में अगला */
+    private String pickNext() {
+        ArrayList<String> c = new ArrayList<String>();
+        for (String id : pool) {
+            if (!id.equals(curId) && !played.contains(id)) c.add(id);
+        }
+        if (c.isEmpty()) return null;
+        return musicOn ? c.get(rnd.nextInt(c.size())) : c.get(0);
+    }
+
+    private void playId(String id) {
+        if (musicOn && !rewardedDone) songCount++;
+        curId = id;
+        markPlayed(id);
+        curTitle = "";
+        lastPos = 0;
+        lastDur = 0;
+        if (mbTitle != null) mbTitle.setText("लोड हो रहा है…");
+        if (mbProg != null) mbProg.setScaleX(0f);
+        loadThumb(id);
+        if (pWeb != null) pWeb.evaluateJavascript("loadId(" + JSONObject.quote(id) + ")", null);
+        pushMusic();
+    }
+
+    private void playNext() {
+        if (mode == MODE_NONE || pWeb == null) return;
+        if (musicOn && !rewardedDone && songCount >= FREE_SONGS) {
+            musicGateTrip();
+            return;
+        }
+        String id = pickNext();
+        if (id != null) {
+            playId(id);
+            return;
+        }
+        harvestPool(new Runnable() {
+            @Override
+            public void run() {
+                String n = pickNext();
+                if (n != null) playId(n);
+                else fetchRelatedAndPlay();
+            }
+        });
+    }
+
+    /** पेज पर नया कुछ न मिले तो: मौजूदा वीडियो के "आगे चलाएँ" वीडियो-id YouTube पेज से निकालो (सबसे अच्छा प्रयास) */
+    private void fetchRelatedAndPlay() {
+        final String from = curId;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final ArrayList<String> got = new ArrayList<String>();
+                HttpURLConnection c = null;
+                try {
+                    if (from.length() == 11) {
+                        c = (HttpURLConnection) new URL("https://m.youtube.com/watch?v=" + from).openConnection();
+                        c.setConnectTimeout(8000);
+                        c.setReadTimeout(10000);
+                        c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+                                + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36");
+                        c.setRequestProperty("Accept-Language", "hi-IN,hi;q=0.9,en;q=0.8");
+                        InputStream in = c.getInputStream();
+                        ByteArrayOutputStream out = new ByteArrayOutputStream();
+                        byte[] buf = new byte[16384];
+                        int n, total = 0;
+                        while ((n = in.read(buf)) > 0 && total < 3000000) {
+                            out.write(buf, 0, n);
+                            total += n;
+                        }
+                        in.close();
+                        Matcher m = Pattern.compile("\"videoId\":\"([A-Za-z0-9_-]{11})\"").matcher(out.toString("UTF-8"));
+                        while (m.find() && got.size() < 40) {
+                            String id = m.group(1);
+                            if (!got.contains(id)) got.add(id);
+                        }
+                    }
+                } catch (Throwable ignored) {
+                } finally {
+                    if (c != null) c.disconnect();
+                }
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (mode == MODE_NONE) return;
+                        for (String id : got) addPool(id);
+                        String n = pickNext();
+                        if (n == null) {                 // सब चल चुके -> फिर से शुरू
+                            played.clear();
+                            if (curId.length() > 0) played.add(curId);
+                            n = pickNext();
+                        }
+                        if (n != null) {
+                            playId(n);
+                        } else {
+                            Toast.makeText(MainActivity.this, "अगला गाना नहीं मिला", Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private int songCount;
+    private boolean musicAfterReward;
+    private android.app.AlertDialog musicDialog;
+
+    /** मुफ़्त गाने पूरे: म्यूज़िक स्विच अपने-आप बंद + रिवॉर्डेड वाला संदेश */
+    private void musicGateTrip() {
+        if (musicSwitch != null) musicSwitch.setChecked(false);
+        showMusicGate();
+    }
+
+    private void showMusicGate() {
+        if (isFinishing() || (musicDialog != null && musicDialog.isShowing())) return;
+        musicDialog = new android.app.AlertDialog.Builder(this)
+                .setMessage("🎵 आपके " + FREE_SONGS + " मुफ़्त गाने पूरे हो गए। म्यूज़िक मोड फिर चालू करने के लिए "
+                        + "एक विज्ञापन (🎁 रिवॉर्डेड वीडियो) पूरा देखें। उसके बाद ऐप खुला रहने तक जितने चाहें गाने सुनें।")
+                .setPositiveButton("🎁 विज्ञापन देखें", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        musicAfterReward = true;
+                        startRewarded(false);
+                    }
+                })
+                .setNegativeButton("अभी नहीं", null)
+                .show();
     }
 
     private void updateMusicService() {
         try {
             Intent si = new Intent(this, MusicService.class);
             if (musicOn && mode != MODE_NONE) {
+                fillMusicStatics();
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(si); else startService(si);
             } else {
                 stopService(si);
@@ -2126,12 +2567,61 @@ public class MainActivity extends Activity {
         enterPip();
     }
 
+    // ------------------------------------------------------------------
+    // PiP (होम स्क्रीन पर तैरती विंडो): सिर्फ़ दो बटन -> चलाएँ/रोकें और बंद
+    // ------------------------------------------------------------------
+    private static final String ACT_PIP_PP = "com.videoplayer.app.PIP_PP";
+    private static final String ACT_PIP_CLOSE = "com.videoplayer.app.PIP_CLOSE";
+    private BroadcastReceiver pipReceiver;
+
+    private PictureInPictureParams pipParams() {
+        PictureInPictureParams.Builder b = new PictureInPictureParams.Builder()
+                .setAspectRatio(new Rational(16, 9));
+        if (Build.VERSION.SDK_INT >= 26) {
+            ArrayList<RemoteAction> acts = new ArrayList<RemoteAction>();
+            acts.add(new RemoteAction(
+                    Icon.createWithResource(this, vidPlaying ? android.R.drawable.ic_media_pause
+                            : android.R.drawable.ic_media_play),
+                    vidPlaying ? "रोकें" : "चलाएँ", "play/pause", pipIntent(ACT_PIP_PP, 11)));
+            acts.add(new RemoteAction(
+                    Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+                    "बंद करें", "close", pipIntent(ACT_PIP_CLOSE, 12)));
+            b.setActions(acts);
+        }
+        return b.build();
+    }
+
+    private PendingIntent pipIntent(String action, int code) {
+        Intent i = new Intent(action).setPackage(getPackageName());
+        return PendingIntent.getBroadcast(this, code, i,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+    }
+
+    private void registerPipReceiver() {
+        pipReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context c, Intent in) {
+                String a = in == null ? null : in.getAction();
+                if (ACT_PIP_PP.equals(a)) {
+                    if (pWeb != null) pWeb.evaluateJavascript("toggle()", null);
+                } else if (ACT_PIP_CLOSE.equals(a)) {
+                    stopPlayer();
+                    if (inPip) moveTaskToBack(true);   // छोटी विंडो भी हट जाए
+                }
+            }
+        };
+        IntentFilter f = new IntentFilter();
+        f.addAction(ACT_PIP_PP);
+        f.addAction(ACT_PIP_CLOSE);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(pipReceiver, f, Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(pipReceiver, f);
+    }
+
     private void enterPip() {
-        if (Build.VERSION.SDK_INT < 26 || inPip || mode == MODE_NONE || !vidPlaying
+        if (Build.VERSION.SDK_INT < 26 || musicOn || inPip || mode == MODE_NONE || !vidPlaying
                 || rewShowing || customView != null) return;
         try {
-            enterPictureInPictureMode(new PictureInPictureParams.Builder()
-                    .setAspectRatio(new Rational(16, 9)).build());
+            enterPictureInPictureMode(pipParams());
         } catch (Throwable ignored) {
         }
     }
@@ -2277,6 +2767,65 @@ public class MainActivity extends Activity {
             return Math.max(5, Math.min(100, Math.round(b * 100)));
         }
 
+        /** गाना खत्म / नोटिफ़िकेशन-बार का अगला बटन: अगला गाना */
+        @JavascriptInterface
+        public void next() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    playNext();
+                }
+            });
+        }
+
+        /** वीडियो एम्बेड नहीं हो सकता (म्यूज़िक मोड) -> अपने-आप अगला, पर लगातार 3 बार से ज़्यादा नहीं */
+        @JavascriptInterface
+        public void skipError() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (++errStreak <= 3) {
+                        playNext();
+                    } else {
+                        Toast.makeText(MainActivity.this, "गाने नहीं चल पा रहे, कोई और चुनें",
+                                Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+        }
+
+        /** गाने का नाम + id (नोटिफ़िकेशन और नीचे के बार में दिखाने के लिए) */
+        @JavascriptInterface
+        public void meta(final String title, final String id) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    curTitle = title == null ? "" : title;
+                    if (id != null && id.length() > 0) {
+                        curId = id;
+                        markPlayed(id);
+                    }
+                    if (mbTitle != null) mbTitle.setText(curTitle);
+                    loadThumb(curId);
+                    pushMusic();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void progress(final double cur, final double dur) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    lastPos = cur;
+                    lastDur = dur;
+                    if (mbProg != null && dur > 0) {
+                        mbProg.setScaleX((float) Math.max(0, Math.min(1, cur / dur)));
+                    }
+                }
+            });
+        }
+
         @JavascriptInterface
         public void state(final int s) {
             runOnUiThread(new Runnable() {
@@ -2284,6 +2833,15 @@ public class MainActivity extends Activity {
                 public void run() {
                     vidPlaying = (s == 1 || s == 3);
                     miniPp.setText((s == 1 || s == 3) ? "❚❚" : "▶\uFE0E");
+                    if (s == 1) errStreak = 0;
+                    if (mbPp != null) mbPp.setText(vidPlaying ? "❚❚" : "▶\uFE0E");
+                    pushMusic();
+                    if (inPip && Build.VERSION.SDK_INT >= 26) {
+                        try {
+                            setPictureInPictureParams(pipParams());
+                        } catch (Throwable ignored) {
+                        }
+                    }
                 }
             });
         }
@@ -2292,6 +2850,9 @@ public class MainActivity extends Activity {
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
+        if (closingShorts) {
+            return;   // Shorts बंद होने का एनिमेशन चल रहा है
+        }
         if (cmOpen) {
             closeComments();
         } else if (customView != null) {
@@ -2456,7 +3017,7 @@ public class MainActivity extends Activity {
         try {
             homeWeb.evaluateJavascript(
                     "document.querySelectorAll('video').forEach(function(v){try{v.pause();}catch(e){}})", null);
-            homeWeb.onPause();
+            // (पहले यहाँ homeWeb.onPause() था: उसी से लौटते समय काली झलक आती थी, इसलिए हटाया)
         } catch (Throwable ignored) {
         }
         WebView sw = new WebView(this);
@@ -2471,16 +3032,28 @@ public class MainActivity extends Activity {
     }
 
     /** Shorts वेबव्यू हटाकर वही होम पेज वापस सामने लाता है */
+    private boolean closingShorts;
+
     private void closeShortsOverlay() {
-        if (homeWeb == null || ytWeb == homeWeb) return;
-        WebView sw = ytWeb;
-        ytWeb = homeWeb;
+        if (homeWeb == null || ytWeb == homeWeb || closingShorts) return;
+        closingShorts = true;
+        final WebView sw = ytWeb;
+        // 1) पीछे वाला होम पेज पहले ही जगा दो, ताकि एनिमेशन के दौरान वही दिखे (काली स्क्रीन नहीं)
         try {
-            root.removeView(sw);
-            sw.destroy();
+            homeWeb.setVisibility(View.VISIBLE);
+            homeWeb.onResume();
+            homeWeb.resumeTimers();
+            homeWeb.invalidate();
         } catch (Throwable ignored) {
         }
-        homeWeb.onResume();
+        // Shorts की आवाज़ तुरंत बंद
+        try {
+            sw.evaluateJavascript(
+                    "document.querySelectorAll('video').forEach(function(v){try{v.pause();}catch(e){}})", null);
+        } catch (Throwable ignored) {
+        }
+        // 2) बाकी स्थिति अभी बदल दो (Shorts वेबव्यू की खबरें अब अनदेखी होंगी)
+        ytWeb = homeWeb;
         holdLoadUntil = 0;
         backWait = false;
         ytLoadFailed = false;
@@ -2489,6 +3062,34 @@ public class MainActivity extends Activity {
         onShorts = false;
         updateShortsBanner(false);
         applyYtMargin();
+        // 3) Shorts का पर्दा गोल कोनों के साथ सिकुड़ता हुआ गायब -> पीछे का पेज दिखता है
+        final int rad = dp(24);
+        sw.setOutlineProvider(new ViewOutlineProvider() {
+            @Override
+            public void getOutline(View view, Outline outline) {
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), rad);
+            }
+        });
+        sw.setClipToOutline(true);
+        sw.setPivotX(sw.getWidth() / 2f);
+        sw.setPivotY(sw.getHeight() / 2f);
+        final Runnable finish = new Runnable() {
+            @Override
+            public void run() {
+                if (!closingShorts) return;
+                closingShorts = false;
+                try {
+                    root.removeView(sw);
+                    sw.destroy();
+                } catch (Throwable ignored) {
+                }
+            }
+        };
+        sw.animate().cancel();
+        sw.animate().scaleX(0.6f).scaleY(0.6f).alpha(0f).setDuration(240)
+                .setInterpolator(new AccelerateDecelerateInterpolator())
+                .withEndAction(finish).start();
+        root.postDelayed(finish, 600);   // पक्का: एनिमेशन किसी वजह से न चले तो भी सफ़ाई हो
     }
 
     private void inject(WebView view) {
@@ -2729,6 +3330,11 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        try {
+            if (pipReceiver != null) unregisterReceiver(pipReceiver);
+        } catch (Throwable ignored) {
+        }
+        MusicService.controls = null;
         try {
             stopService(new Intent(this, MusicService.class));
         } catch (Throwable ignored) {
