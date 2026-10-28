@@ -25,7 +25,10 @@ import android.graphics.Outline;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.app.PictureInPictureParams;
+import android.util.Rational;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Log;
@@ -70,7 +73,13 @@ import com.unity3d.services.banners.BannerErrorInfo;
 import com.unity3d.services.banners.BannerView;
 import com.unity3d.services.banners.UnityBannerSize;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
+
+import java.net.HttpURLConnection;
+import java.net.URL;
+import android.graphics.Rect;
+import android.widget.ScrollView;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -103,7 +112,7 @@ public class MainActivity extends Activity {
             + "if(!a)return;"
             + "var h=a.hostname,p=a.pathname;"
             + "var yt=(h==='www.youtube.com'||h==='m.youtube.com'||h==='youtube.com');"
-            + "if(yt&&p.indexOf('/shorts/')===0){try{VideoBridge.shorts();}catch(x){}return;}"
+            + "if(yt&&(p==='/shorts'||p.indexOf('/shorts/')===0)){try{VideoBridge.shorts();if(VideoBridge.openShorts(a.href)){e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();}}catch(x){}return;}"
             + "var ok=(yt&&(p==='/watch'||p.indexOf('/live/')===0||p==='/playlist'))||h==='youtu.be';"
             + "if(!ok)return;"
             + "e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();"
@@ -207,7 +216,8 @@ public class MainActivity extends Activity {
     };
 
     private FrameLayout root;
-    private WebView ytWeb;
+    private WebView ytWeb;       // अभी जो YouTube वेबव्यू सामने है (होम या Shorts)
+    private WebView homeWeb;     // होम पेज वाला वेबव्यू: Shorts के दौरान नीचे जैसा का तैसा रहता है
 
     private FrameLayout playerLayer;
     private FrameLayout fullBg;
@@ -251,6 +261,7 @@ public class MainActivity extends Activity {
         proxSensor = sensorMgr == null ? null : sensorMgr.getDefaultSensor(Sensor.TYPE_PROXIMITY);
         waveOn = proxSensor != null
                 && getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_WAVE, false);
+        musicOn = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_MUSIC, false);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.WHITE);
@@ -269,7 +280,7 @@ public class MainActivity extends Activity {
             @Override
             public void onLayoutChange(View v, int l, int t, int r, int b,
                                        int oldL, int oldT, int oldR, int oldB) {
-                if (mode == MODE_MINI && !fsOn
+                if (mode == MODE_MINI && !fsOn && !inPip
                         && (r - l != oldR - oldL || b - t != oldB - oldT)) {
                     placeMini();
                 }
@@ -289,99 +300,9 @@ public class MainActivity extends Activity {
             }
         }).start();
 
-        WebSettings s = ytWeb.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);
-        s.setMediaPlaybackRequiresUserGesture(false);
-        s.setSupportMultipleWindows(false);
-        s.setForceDark(WebSettings.FORCE_DARK_OFF);
-        s.setSupportZoom(false);
-        s.setBuiltInZoomControls(false);
-        s.setDisplayZoomControls(false);
-        s.setUseWideViewPort(true);
-        s.setLoadWithOverviewMode(false);
-
+        homeWeb = ytWeb;
+        configureYt(ytWeb);
         CookieManager cm = CookieManager.getInstance();
-        cm.setAcceptCookie(true);
-        cm.setAcceptThirdPartyCookies(ytWeb, true);
-
-        ytWeb.addJavascriptInterface(new Bridge(), "VideoBridge");
-        ytWeb.addJavascriptInterface(new SpeechBridge(), "Speech");
-        ytWeb.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onProgressChanged(WebView view, int newProgress) {
-                // पेज काफ़ी लोड हो गया तो लोडिंग स्क्रीन हटाकर तुरंत पेज दिखाओ
-                if (newProgress >= 80 && !ytLoadFailed) hideLoadingSmart();
-            }
-
-            @Override
-            public void onPermissionRequest(final PermissionRequest request) {
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        boolean wantsAudio = false;
-                        for (String r : request.getResources()) {
-                            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) wantsAudio = true;
-                        }
-                        if (!wantsAudio) {
-                            request.deny();
-                            return;
-                        }
-                        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                                == PackageManager.PERMISSION_GRANTED) {
-                            request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
-                        } else {
-                            pendingWebPerm = request;
-                            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
-                        }
-                    }
-                });
-            }
-        });
-        ytWeb.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                String url = request.getUrl().toString();
-                if (request.isForMainFrame() && !isShorts(url) && VideoLink.parse(url) != null) {
-                    openPlayer(url);
-                    return true;
-                }
-                return false;
-            }
-
-            @Override
-            public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                ytLoadFailed = false;
-                backWait = false;            // पूरा पेज लोड हो रहा है -> तैयार होने तक रुको
-                if (!firstPageLoad) showLoading();
-                inject(view);
-                onYtUrl(url);
-            }
-
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                if (!ytLoadFailed) hideLoadingSmart();
-                inject(view);
-                onYtUrl(url);
-            }
-
-            @Override
-            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                if (request != null && request.isForMainFrame()) {
-                    showLoadError(request.getUrl().toString());
-                }
-            }
-
-            /** YouTube (m.) पेज बदले बिना भी URL बदलता है (Shorts में ऊपर स्वाइप) -> यहीं पकड़ में आता है */
-            @Override
-            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
-                onYtUrl(url);
-                if (backWait) {            // YouTube ने पेज बदले बिना पीछे लौटा दिया -> जल्दी दिखाओ
-                    backWait = false;
-                    hideLoadingSmart();
-                }
-            }
-        });
 
         forceLightCookie(cm);
         ytWeb.loadUrl(HOME);
@@ -692,9 +613,12 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 rewShowing = false;
+                boolean wasWave = waveAfterReward;
+                waveAfterReward = false;
                 if (done) {
                     rewardedDone = true;
                     updateRewBtn();
+                    if (wasWave && waveSwitch != null) waveSwitch.setChecked(true);
                 } else {
                     loadRewarded();                       // अगली बार के लिए
                 }
@@ -1041,6 +965,34 @@ public class MainActivity extends Activity {
         wbLp.rightMargin = dp(2);
         top.addView(waveBox, wbLp);
 
+        // 🎵 म्यूज़िक मोड: वीडियो की जगह थंबनेल, सिर्फ़ गाना बजे (स्क्रीन बंद / ऐप नीचे होने पर भी)
+        LinearLayout musicBox = new LinearLayout(this);
+        musicBox.setOrientation(LinearLayout.HORIZONTAL);
+        musicBox.setGravity(Gravity.CENTER_VERTICAL);
+        TextView musicIcon = new TextView(this);
+        musicIcon.setText("🎵");
+        musicIcon.setTextSize(15);
+        musicBox.addView(musicIcon);
+        musicSwitch = new Switch(this);
+        musicSwitch.setChecked(musicOn);
+        int[][] mst = new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}};
+        musicSwitch.setThumbTintList(new ColorStateList(mst, new int[]{0xFFFFFFFF, 0xFFDDDDDD}));
+        musicSwitch.setTrackTintList(new ColorStateList(mst, new int[]{0xFF2ECC71, 0x66FFFFFF}));
+        musicSwitch.setScaleX(0.8f);
+        musicSwitch.setScaleY(0.8f);
+        musicSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                setMusic(on);
+            }
+        });
+        musicBox.addView(musicSwitch, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams mbLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mbLp.rightMargin = dp(2);
+        top.addView(musicBox, mbLp);
+
         // दाएँ कोने में मिनिमाइज़: प्लेयर नीचे छोटा, YouTube का पेज खुल जाए
         MinimizeIcon home = new MinimizeIcon(this);
         GradientDrawable circle2 = new GradientDrawable();
@@ -1178,6 +1130,7 @@ public class MainActivity extends Activity {
         playerLayer.addView(miniBox, new FrameLayout.LayoutParams(
                 dp(MINI_W), dp(MINI_CARD_H), Gravity.TOP | Gravity.LEFT));
         buildFsNotice();
+        buildComments();
 
         root.addView(playerLayer, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -1192,6 +1145,7 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 // नया वीडियो लोड होने पर छोटा/बड़ा मोड फिर से लागू (छोटी विंडो में बार न दिखे)
                 view.evaluateJavascript("window.setMini&&setMini(" + (mode == MODE_MINI) + ")", null);
+                view.evaluateJavascript("window.setMusic&&setMusic(" + musicOn + ")", null);
             }
         });
         pWeb.setWebChromeClient(new WebChromeClient() {
@@ -1255,6 +1209,7 @@ public class MainActivity extends Activity {
     }
 
     private void setMode(int m) {
+        if (m != MODE_FULL) closeComments();
         mode = m;
         hideFsNotice();
         if (m == MODE_NONE) {
@@ -1271,6 +1226,7 @@ public class MainActivity extends Activity {
             applyCardLayout();
             pWeb.evaluateJavascript("setMini(" + (m == MODE_MINI) + ")", null);
         }
+        updateMusicService();
         // छोटी विंडो अब पेज के ऊपर तैरती है, नीचे जगह नहीं छोड़नी; सिर्फ़ Shorts बैनर की जगह
         applyYtMargin();
         if (!fsOn && customView == null
@@ -1281,6 +1237,8 @@ public class MainActivity extends Activity {
     }
 
     private void stopPlayer() {
+        vidPlaying = false;
+        closeComments();
         if (customView != null) pWeb.getWebChromeClient().onHideCustomView();
         if (fsOn) setFullscreen(false);
         spinner.removeCallbacks(hideSpinner);
@@ -1295,6 +1253,7 @@ public class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     private void setFullscreen(boolean on) {
         if (mode == MODE_NONE) return;
+        closeComments();
         hideFsNotice();
         fsOn = on;
         if (on) {
@@ -1368,7 +1327,23 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
-        if (card != null && mode == MODE_FULL && !fsOn && customView == null
+        if (cmOpen && cmPanel != null) {
+            // कमेंट खुले हों तो पैनल के बाहर कहीं भी टैप -> कमेंट बंद (वह टैप और कुछ नहीं करेगा)
+            int act = ev.getActionMasked();
+            if (act == MotionEvent.ACTION_DOWN) {
+                Rect r = new Rect();
+                cmPanel.getGlobalVisibleRect(r);
+                cmSwallow = !r.contains((int) ev.getRawX(), (int) ev.getRawY());
+                if (cmSwallow) {
+                    closeComments();
+                    return true;
+                }
+            } else if (cmSwallow) {
+                if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) cmSwallow = false;
+                return true;
+            }
+        }
+        if (card != null && mode == MODE_FULL && !fsOn && customView == null && !cmOpen
                 && playerLayer.getVisibility() == View.VISIBLE && handleDrag(ev)) {
             return true;
         }
@@ -1464,7 +1439,7 @@ public class MainActivity extends Activity {
 
     private void applyCardLayout() {
         FrameLayout.LayoutParams lp;
-        if (fsOn) {
+        if (fsOn || inPip) {
             lp = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         } else if (mode == MODE_MINI) {
@@ -1481,7 +1456,7 @@ public class MainActivity extends Activity {
             lp.gravity = Gravity.TOP;
         }
         card.setLayoutParams(lp);
-        if (mode == MODE_MINI && !fsOn) {
+        if (mode == MODE_MINI && !fsOn && !inPip) {
             placeMini();
         } else if (!dragging) {
             card.setTranslationX(0f);
@@ -1491,7 +1466,7 @@ public class MainActivity extends Activity {
         // बैनर: सिर्फ़ बड़े प्लेयर में, पोर्ट्रेट में, सीक बार वाले कार्ड के ठीक नीचे
         boolean portrait = getResources().getConfiguration().orientation
                 != Configuration.ORIENTATION_LANDSCAPE;
-        if (!fsOn && mode == MODE_FULL && portrait) {
+        if (!fsOn && !inPip && !cmOpen && mode == MODE_FULL && portrait) {
             int rootH = root.getHeight();
             if (rootH <= 0) rootH = getResources().getDisplayMetrics().heightPixels;
             int top = lp.topMargin + lp.height + dp(12);
@@ -1533,6 +1508,7 @@ public class MainActivity extends Activity {
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         if (card != null && mode != MODE_NONE) applyCardLayout();
+        if (cmOpen) positionComments();
         if (ytLocked && !fsOn && customView == null
                 && newConfig.orientation == Configuration.ORIENTATION_PORTRAIT) {
             unlockYt();
@@ -1542,6 +1518,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        resumedNow = false;
         stopProx();
         if (root != null) root.removeCallbacks(urlPoll);
         if (orient != null) orient.disable();
@@ -1594,6 +1571,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        resumedNow = true;
         if (orient != null && orient.canDetectOrientation()) orient.enable();
         updateWaveSensor();
         if (root != null) {
@@ -1616,6 +1594,10 @@ public class MainActivity extends Activity {
     private Switch waveSwitch;
     private boolean waveOn, proxNear, proxRegistered;
     private long lastWaveMs;
+    // ऐप खुलने के बाद शुरू के FREE_WAVES बार हाथ लहराना मुफ़्त; उसके बाद स्विच बंद हो जाता है
+    // और रिवॉर्डेड वीडियो पूरा (हरा) होने पर ही फिर चालू होगा। ऐप दोबारा खुलने पर फिर 5 मुफ़्त।
+    private static final int FREE_WAVES = 5;
+    private int waveCount;
 
     private final SensorEventListener proxListener = new SensorEventListener() {
         @Override
@@ -1642,11 +1624,35 @@ public class MainActivity extends Activity {
             if (waveSwitch != null) waveSwitch.setChecked(false);
             return;
         }
+        if (on && !rewardedDone && waveCount >= FREE_WAVES) {
+            if (waveSwitch != null) waveSwitch.setChecked(false);
+            showWaveGate();
+            return;
+        }
         waveOn = on;
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(PREF_WAVE, on).apply();
         updateWaveSensor();
         Toast.makeText(this, on ? "✋ हाथ लहराकर अगला Shorts: चालू"
                 : "✋ हाथ लहराकर अगला Shorts: बंद", Toast.LENGTH_SHORT).show();
+    }
+
+    private boolean waveAfterReward;
+    private android.app.AlertDialog waveDialog;
+
+    /** मुफ़्त बार पूरे: एक विज्ञापन देखने का बटन. पूरा देखते ही स्विच अपने-आप चालू हो जाता है */
+    private void showWaveGate() {
+        if (isFinishing() || (waveDialog != null && waveDialog.isShowing())) return;
+        waveDialog = new android.app.AlertDialog.Builder(this)
+                .setMessage("✋ हाथ लहराकर अगला Shorts चालू करने के लिए एक विज्ञापन (🎁 रिवॉर्डेड वीडियो) पूरा देखें")
+                .setPositiveButton("🎁 विज्ञापन देखें", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        waveAfterReward = true;
+                        startRewarded(false);
+                    }
+                })
+                .setNegativeButton("अभी नहीं", null)
+                .show();
     }
 
     private void updateWaveSensor() {
@@ -1678,6 +1684,14 @@ public class MainActivity extends Activity {
                 || rewShowing || (loadView != null && loadView.getVisibility() == View.VISIBLE)) return;
         lastWaveMs = now;
         swipeNextShort();
+        if (!rewardedDone) {
+            waveCount++;
+            if (waveCount >= FREE_WAVES) {      // मुफ़्त बार पूरे -> स्विच अपने-आप बंद
+                if (waveSwitch != null) waveSwitch.setChecked(false);
+                setWave(false);
+                showWaveGate();
+            }
+        }
     }
 
     /** उँगली जैसा ऊपर स्वाइप: नीचे से ऊपर की ओर तेज़ खिसकाव -> अगला Shorts */
@@ -1709,6 +1723,447 @@ public class MainActivity extends Activity {
         ev.recycle();
     }
 
+    /** YouTube वेबव्यू की सारी सेटिंग (होम और Shorts दोनों वेबव्यू के लिए एक जैसी) */
+    @SuppressWarnings("deprecation")
+    private void configureYt(final WebView web) {
+        WebSettings s = web.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setMediaPlaybackRequiresUserGesture(false);
+        s.setSupportMultipleWindows(false);
+        s.setForceDark(WebSettings.FORCE_DARK_OFF);
+        s.setSupportZoom(false);
+        s.setBuiltInZoomControls(false);
+        s.setDisplayZoomControls(false);
+        s.setUseWideViewPort(true);
+        s.setLoadWithOverviewMode(false);
+
+        CookieManager cm = CookieManager.getInstance();
+        cm.setAcceptCookie(true);
+        cm.setAcceptThirdPartyCookies(web, true);
+
+        web.addJavascriptInterface(new Bridge(), "VideoBridge");
+        web.addJavascriptInterface(new SpeechBridge(), "Speech");
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onProgressChanged(WebView view, int newProgress) {
+                if (view != ytWeb) return;   // हटाए/पीछे वाले वेबव्यू की खबर अनदेखी
+                // पेज काफ़ी लोड हो गया तो लोडिंग स्क्रीन हटाकर तुरंत पेज दिखाओ
+                if (newProgress >= 80 && !ytLoadFailed) hideLoadingSmart();
+            }
+
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        boolean wantsAudio = false;
+                        for (String r : request.getResources()) {
+                            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) wantsAudio = true;
+                        }
+                        if (!wantsAudio) {
+                            request.deny();
+                            return;
+                        }
+                        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                                == PackageManager.PERMISSION_GRANTED) {
+                            request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                        } else {
+                            pendingWebPerm = request;
+                            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
+                        }
+                    }
+                });
+            }
+        });
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                String url = request.getUrl().toString();
+                if (request.isForMainFrame() && view == homeWeb && isShortsPage(url)) {
+                    openShortsOverlay(url);   // होम पेज वैसा ही रहे, Shorts अलग वेबव्यू में
+                    return true;
+                }
+                if (request.isForMainFrame() && !isShorts(url) && VideoLink.parse(url) != null) {
+                    openPlayer(url);
+                    return true;
+                }
+                return false;
+            }
+
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                if (view != ytWeb) return;
+                ytLoadFailed = false;
+                backWait = false;            // पूरा पेज लोड हो रहा है -> तैयार होने तक रुको
+                if (!firstPageLoad) showLoading();
+                inject(view);
+                onYtUrl(url);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                if (view != ytWeb) return;
+                if (!ytLoadFailed) hideLoadingSmart();
+                inject(view);
+                onYtUrl(url);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                if (view != ytWeb) return;
+                if (request != null && request.isForMainFrame()) {
+                    showLoadError(request.getUrl().toString());
+                }
+            }
+
+            /** YouTube (m.) पेज बदले बिना भी URL बदलता है (Shorts में ऊपर स्वाइप) -> यहीं पकड़ में आता है */
+            @Override
+            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+                if (view != ytWeb) return;
+                onYtUrl(url);
+                if (backWait) {            // YouTube ने पेज बदले बिना पीछे लौटा दिया -> जल्दी दिखाओ
+                    backWait = false;
+                    hideLoadingSmart();
+                }
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // कमेंट: वीडियो के नीचे पैनल (स्क्रॉल करके पढ़ो); पैनल के बाहर कहीं भी टैप करने पर बंद
+    // ------------------------------------------------------------------
+    // YouTube Data API v3 की key यहाँ डालें (Google Cloud Console -> YouTube Data API v3 -> API key)
+    private static final String YT_API_KEY = "";
+
+    private LinearLayout cmPanel, cmList;
+    private ScrollView cmScroll;
+    private TextView cmStatus;
+    private String cmVideoId, cmNext;
+    private boolean cmOpen, cmLoading, cmEnd, cmSwallow;
+
+    private void buildComments() {
+        cmPanel = new LinearLayout(this);
+        cmPanel.setOrientation(LinearLayout.VERTICAL);
+        cmPanel.setVisibility(View.GONE);
+        cmPanel.setElevation(dp(10));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF181818);
+        bg.setCornerRadii(new float[]{dp(14), dp(14), dp(14), dp(14), 0, 0, 0, 0});
+        cmPanel.setBackground(bg);
+        cmPanel.setClickable(true);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(dp(14), dp(8), dp(6), dp(8));
+        TextView title = new TextView(this);
+        title.setText("💬 कमेंट");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(15);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        head.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView x = new TextView(this);
+        x.setText("✕");
+        x.setTextColor(Color.WHITE);
+        x.setTextSize(18);
+        x.setGravity(Gravity.CENTER);
+        x.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeComments();
+            }
+        });
+        head.addView(x, new LinearLayout.LayoutParams(dp(40), dp(36)));
+        cmPanel.addView(head, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        cmScroll = new ScrollView(this);
+        cmList = new LinearLayout(this);
+        cmList.setOrientation(LinearLayout.VERTICAL);
+        cmList.setPadding(dp(14), 0, dp(14), dp(16));
+        cmScroll.addView(cmList, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        cmScroll.setOnScrollChangeListener(new View.OnScrollChangeListener() {
+            @Override
+            public void onScrollChange(View v, int sx, int sy, int ox, int oy) {
+                View c = cmScroll.getChildAt(0);
+                if (c != null && !cmEnd
+                        && c.getBottom() - (cmScroll.getHeight() + sy) < dp(240)) {
+                    loadComments();
+                }
+            }
+        });
+        cmPanel.addView(cmScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        cmStatus = new TextView(this);
+        cmStatus.setTextColor(0xFFAAAAAA);
+        cmStatus.setTextSize(13);
+        cmStatus.setPadding(0, dp(10), 0, dp(10));
+
+        playerLayer.addView(cmPanel, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(300), Gravity.TOP));
+    }
+
+    private void positionComments() {
+        if (cmPanel == null) return;
+        int rootH = root.getHeight() > 0 ? root.getHeight()
+                : getResources().getDisplayMetrics().heightPixels;
+        boolean portrait = getResources().getConfiguration().orientation
+                != Configuration.ORIENTATION_LANDSCAPE;
+        int top;
+        if (portrait) {
+            int w = getResources().getDisplayMetrics().widthPixels - dp(24);
+            top = dp(TOP_H) + w * 9 / 16 + dp(BAR_DP) + dp(8);   // वीडियो + बार के ठीक नीचे
+        } else {
+            top = rootH * 40 / 100;
+        }
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(dp(160), rootH - top), Gravity.TOP);
+        lp.topMargin = top;
+        cmPanel.setLayoutParams(lp);
+    }
+
+    private void openComments(String videoId) {
+        if (cmPanel == null || mode != MODE_FULL || fsOn || videoId == null || videoId.length() == 0) return;
+        if (!videoId.equals(cmVideoId)) {
+            cmVideoId = videoId;
+            cmNext = null;
+            cmEnd = false;
+            cmLoading = false;
+            cmList.removeAllViews();
+        }
+        cmOpen = true;
+        bannerHolder.setVisibility(View.GONE);
+        positionComments();
+        cmPanel.setVisibility(View.VISIBLE);
+        cmScroll.scrollTo(0, 0);
+        if (cmList.getChildCount() == 0) loadComments();
+    }
+
+    private void closeComments() {
+        if (!cmOpen) return;
+        cmOpen = false;
+        cmSwallow = false;
+        if (cmPanel != null) cmPanel.setVisibility(View.GONE);
+        if (card != null && mode != MODE_NONE) applyCardLayout();   // बैनर वापस
+    }
+
+    private void setCmStatus(String s) {
+        if (cmStatus.getParent() != null) ((ViewGroup) cmStatus.getParent()).removeView(cmStatus);
+        if (s == null) return;
+        cmStatus.setText(s);
+        cmList.addView(cmStatus);
+    }
+
+    private void loadComments() {
+        if (cmLoading || cmEnd || cmVideoId == null) return;
+        if (YT_API_KEY.length() == 0) {
+            cmEnd = true;
+            setCmStatus("कमेंट पढ़ने के लिए MainActivity.java में YT_API_KEY (YouTube Data API v3) डालनी होगी");
+            return;
+        }
+        cmLoading = true;
+        setCmStatus("लोड हो रहा है…");
+        final String vid = cmVideoId, tok = cmNext;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String err = null;
+                JSONArray items = null;
+                String next = null;
+                HttpURLConnection c = null;
+                try {
+                    String u = "https://www.googleapis.com/youtube/v3/commentThreads?part=snippet"
+                            + "&maxResults=30&order=relevance&textFormat=plainText&videoId="
+                            + Uri.encode(vid) + "&key=" + Uri.encode(YT_API_KEY)
+                            + (tok != null ? "&pageToken=" + Uri.encode(tok) : "");
+                    c = (HttpURLConnection) new URL(u).openConnection();
+                    c.setConnectTimeout(10000);
+                    c.setReadTimeout(15000);
+                    int code = c.getResponseCode();
+                    InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+                    ByteArrayOutputStream out = new ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while (in != null && (n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    String body = out.toString("UTF-8");
+                    if (code >= 400) {
+                        err = body.contains("commentsDisabled") ? "इस वीडियो में कमेंट बंद हैं"
+                                : body.contains("quotaExceeded") ? "आज की API सीमा पूरी हो गई"
+                                : "कमेंट नहीं मिल पाए (" + code + ")";
+                    } else {
+                        JSONObject o = new JSONObject(body);
+                        items = o.optJSONArray("items");
+                        next = o.optString("nextPageToken", "");
+                    }
+                } catch (Throwable t) {
+                    err = "इंटरनेट जाँचिए, कमेंट नहीं आ पाए";
+                } finally {
+                    if (c != null) c.disconnect();
+                }
+                final String fErr = err, fNext = next;
+                final JSONArray fItems = items;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!vid.equals(cmVideoId)) return;     // बीच में दूसरा वीडियो खुल गया
+                        cmLoading = false;
+                        setCmStatus(null);
+                        if (fErr != null) {
+                            cmEnd = true;
+                            setCmStatus(fErr);
+                            return;
+                        }
+                        try {
+                            for (int i = 0; fItems != null && i < fItems.length(); i++) {
+                                JSONObject s = fItems.getJSONObject(i).getJSONObject("snippet")
+                                        .getJSONObject("topLevelComment").getJSONObject("snippet");
+                                addCommentView(s.optString("authorDisplayName"),
+                                        s.optString("textDisplay"), s.optInt("likeCount", 0));
+                            }
+                        } catch (Throwable ignored) {
+                        }
+                        cmNext = (fNext == null || fNext.length() == 0) ? null : fNext;
+                        cmEnd = cmNext == null;
+                        if (cmList.getChildCount() == 0) setCmStatus("अभी कोई कमेंट नहीं है");
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void addCommentView(String author, String text, int likes) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(0, dp(8), 0, dp(8));
+        TextView a = new TextView(this);
+        a.setText(author);
+        a.setTextColor(0xFFAAAAAA);
+        a.setTextSize(12);
+        a.setTypeface(Typeface.DEFAULT_BOLD);
+        row.addView(a);
+        TextView b = new TextView(this);
+        b.setText(text);
+        b.setTextColor(Color.WHITE);
+        b.setTextSize(14);
+        row.addView(b);
+        if (likes > 0) {
+            TextView l = new TextView(this);
+            l.setText("👍 " + likes);
+            l.setTextColor(0xFF888888);
+            l.setTextSize(12);
+            row.addView(l);
+        }
+        cmList.addView(row);
+    }
+
+    // ------------------------------------------------------------------
+    // 🎵 म्यूज़िक मोड: थंबनेल + सिर्फ़ गाना. ऐप नीचे करने / स्क्रीन बंद होने पर भी चलता रहे
+    // (इसके लिए MusicService नोटिफ़िकेशन के साथ ऐप को ज़िंदा रखती है)
+    // ------------------------------------------------------------------
+    private static final String PREF_MUSIC = "music_mode";
+    private static final int REQ_NOTIF = 78;
+    private Switch musicSwitch;
+    private boolean musicOn;
+
+    private void setMusic(boolean on) {
+        if (on == musicOn) return;
+        musicOn = on;
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(PREF_MUSIC, on).apply();
+        if (pWeb != null) pWeb.evaluateJavascript("window.setMusic&&setMusic(" + on + ")", null);
+        if (on && Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_NOTIF);
+        }
+        updateMusicService();
+        Toast.makeText(this, on ? "🎵 म्यूज़िक मोड चालू: थंबनेल दिखेगा, गाना बजेगा"
+                : "🎵 म्यूज़िक मोड बंद", Toast.LENGTH_SHORT).show();
+    }
+
+    private void updateMusicService() {
+        try {
+            Intent si = new Intent(this, MusicService.class);
+            if (musicOn && mode != MODE_NONE) {
+                if (Build.VERSION.SDK_INT >= 26) startForegroundService(si); else startService(si);
+            } else {
+                stopService(si);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        // म्यूज़िक मोड में ऐप नीचे / स्क्रीन बंद होने पर भी वेबव्यू चलता रहे
+        if (musicOn && mode != MODE_NONE && pWeb != null) {
+            pWeb.onResume();
+            pWeb.resumeTimers();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // ऐप को नीचे (होम/जेस्चर) करने पर वीडियो छोटी विंडो (Picture-in-Picture) में सब ऐप के ऊपर चलता रहे
+    // ------------------------------------------------------------------
+    private boolean vidPlaying, inPip, resumedNow;
+
+    private final Runnable pipCheck = new Runnable() {
+        @Override
+        public void run() {
+            // छोटी विंडो को ✕ से बंद किया गया (ऐप सामने नहीं आया) -> वीडियो रोक दो
+            if (!resumedNow && !inPip && mode != MODE_NONE && pWeb != null) {
+                pWeb.evaluateJavascript("try{p.pauseVideo()}catch(e){}", null);
+            }
+        }
+    };
+
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        enterPip();
+    }
+
+    private void enterPip() {
+        if (Build.VERSION.SDK_INT < 26 || inPip || mode == MODE_NONE || !vidPlaying
+                || rewShowing || customView != null) return;
+        try {
+            enterPictureInPictureMode(new PictureInPictureParams.Builder()
+                    .setAspectRatio(new Rational(16, 9)).build());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPip, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPip, newConfig);
+        inPip = isInPip;
+        if (card == null || pWeb == null) return;
+        if (isInPip) {
+            hideFsNotice();
+            fullBg.setVisibility(View.GONE);
+            miniBox.setVisibility(View.GONE);
+            bannerHolder.setVisibility(View.GONE);
+            if (shortsHolder != null) shortsHolder.setVisibility(View.GONE);
+            corner = 0;
+            card.invalidateOutline();
+            applyCardLayout();
+            pWeb.evaluateJavascript("setMini(true)", null);
+        } else {
+            corner = (mode == MODE_MINI) ? dp(12) : dp(16);
+            card.invalidateOutline();
+            fullBg.setVisibility(mode == MODE_FULL ? View.VISIBLE : View.GONE);
+            miniBox.setVisibility(mode == MODE_MINI ? View.VISIBLE : View.GONE);
+            applyCardLayout();
+            pWeb.evaluateJavascript("setMini(" + (mode == MODE_MINI) + ")", null);
+            updateShortsBanner(false);
+            root.removeCallbacks(pipCheck);
+            root.postDelayed(pipCheck, 500);
+        }
+    }
+
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
@@ -1732,6 +2187,19 @@ public class MainActivity extends Activity {
 
     /** YouTube पेज से: वीडियो पर क्लिक */
     private class Bridge {
+        /** होम पेज से Shorts पर टैप: अलग वेबव्यू में खोलो (true). Shorts के अंदर से हो तो false -> YouTube खुद संभाले */
+        @JavascriptInterface
+        public boolean openShorts(final String url) {
+            if (ytWeb != homeWeb) return false;
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    openShortsOverlay(url);
+                }
+            });
+            return true;
+        }
+
         @JavascriptInterface
         public void shorts() {
             runOnUiThread(new Runnable() {
@@ -1755,6 +2223,17 @@ public class MainActivity extends Activity {
 
     /** प्लेयर पेज से: तैयार है / चल रहा है या रुका */
     private class NativeBridge {
+        /** नीचे की बार के 💬 बटन से: कमेंट खोलो / बंद करो */
+        @JavascriptInterface
+        public void comments(final String videoId) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (cmOpen) closeComments(); else openComments(videoId);
+                }
+            });
+        }
+
         @JavascriptInterface
         public void ready() {
             runOnUiThread(hideSpinner);
@@ -1803,6 +2282,7 @@ public class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
+                    vidPlaying = (s == 1 || s == 3);
                     miniPp.setText((s == 1 || s == 3) ? "❚❚" : "▶\uFE0E");
                 }
             });
@@ -1812,12 +2292,18 @@ public class MainActivity extends Activity {
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
-        if (customView != null) {
+        if (cmOpen) {
+            closeComments();
+        } else if (customView != null) {
             pWeb.getWebChromeClient().onHideCustomView();
         } else if (fsOn) {
             setFullscreen(false);
         } else if (mode == MODE_FULL) {
             setMode(MODE_MINI);          // बैक -> वीडियो नीचे छोटा होकर चलता रहेगा
+        } else if (ytWeb != null && homeWeb != null && ytWeb != homeWeb) {
+            // Shorts वेबव्यू से बैक: अलग वेबव्यू हटाओ, होम पेज बिना रीफ्रेश वैसा ही दिखेगा
+            if (!onShorts && ytWeb.canGoBack()) ytWeb.goBack();
+            else closeShortsOverlay();
         } else if (ytWeb != null && ytWeb.canGoBack()) {
             // Shorts से बैक: पुराना पेज पहले से खुला है, इसलिए बिना लोडिंग के तुरंत दिखे
             if (!onShorts) showBackLoading();   // बाकी पेजों पर काली स्क्रीन की जगह लोडिंग
@@ -1963,6 +2449,48 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Shorts को अलग वेबव्यू में खोलता है; नीचे वाला होम पेज छुआ नहीं जाता (रीलोड नहीं होता) */
+    private void openShortsOverlay(String url) {
+        if (homeWeb == null || ytWeb != homeWeb || ytLocked) return;
+        if (mode != MODE_NONE) stopPlayer();
+        try {
+            homeWeb.evaluateJavascript(
+                    "document.querySelectorAll('video').forEach(function(v){try{v.pause();}catch(e){}})", null);
+            homeWeb.onPause();
+        } catch (Throwable ignored) {
+        }
+        WebView sw = new WebView(this);
+        sw.setBackgroundColor(Color.WHITE);
+        configureYt(sw);
+        ytWeb = sw;
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        root.addView(sw, root.indexOfChild(homeWeb) + 1, lp);
+        sw.loadUrl(url);
+        onYtUrl(url);
+    }
+
+    /** Shorts वेबव्यू हटाकर वही होम पेज वापस सामने लाता है */
+    private void closeShortsOverlay() {
+        if (homeWeb == null || ytWeb == homeWeb) return;
+        WebView sw = ytWeb;
+        ytWeb = homeWeb;
+        try {
+            root.removeView(sw);
+            sw.destroy();
+        } catch (Throwable ignored) {
+        }
+        homeWeb.onResume();
+        holdLoadUntil = 0;
+        backWait = false;
+        ytLoadFailed = false;
+        root.removeCallbacks(backHide);
+        hideLoading();
+        onShorts = false;
+        updateShortsBanner(false);
+        applyYtMargin();
+    }
+
     private void inject(WebView view) {
         view.evaluateJavascript(HOOK, null);
         view.evaluateJavascript(SPEECH_JS, null);
@@ -1985,7 +2513,11 @@ public class MainActivity extends Activity {
         FrameLayout.LayoutParams yl = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         yl.bottomMargin = ytBottomMargin();
-        root.addView(ytWeb, 0, yl);
+        int at = 0;
+        if (homeWeb != null && homeWeb != ytWeb && root.indexOfChild(homeWeb) >= 0) {
+            at = root.indexOfChild(homeWeb) + 1;
+        }
+        root.addView(ytWeb, at, yl);
         if (RELOAD_YT_AFTER_FULLSCREEN) {
             String u = ytWeb.getUrl();
             if (u != null && u.startsWith("http")) ytWeb.reload();
@@ -2197,6 +2729,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        try {
+            stopService(new Intent(this, MusicService.class));
+        } catch (Throwable ignored) {
+        }
         for (AdSlot a : adSlots) {
             try {
                 if (a.view != null) a.view.destroy();
@@ -2217,6 +2753,10 @@ public class MainActivity extends Activity {
             pWeb.destroy();
             pWeb = null;
         }
+        if (homeWeb != null && homeWeb != ytWeb) {
+            homeWeb.destroy();
+        }
+        homeWeb = null;
         if (ytWeb != null) {
             ytWeb.destroy();
             ytWeb = null;
