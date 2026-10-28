@@ -9,6 +9,8 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;-webkit-tap-highl
 #stage{position:relative;flex:1;min-height:0;background:#000}
 #frame{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;z-index:1}
 #player,#player iframe{position:absolute;left:0;top:-120px;width:100%;height:calc(100% + 240px);border:0;pointer-events:none}
+#thumb{position:absolute;z-index:1;display:none;background:#000 center/cover no-repeat}
+body.music #thumb{display:block}
 #shield{position:absolute;left:0;top:0;width:100%;height:100%;z-index:2;touch-action:none}
 #big{position:absolute;z-index:3;left:50%;top:50%;width:88px;height:88px;margin:-44px 0 0 -44px;border-radius:50%;background:#0b0b0b;color:#fff;font-size:36px;border:0;padding:0;display:flex;align-items:center;justify-content:center;opacity:0;visibility:hidden;transition:opacity .2s}
 #big.on{opacity:1;visibility:visible}
@@ -29,6 +31,12 @@ body.mini #bar{display:none !important}
 #btrack{position:relative;width:6px;height:120px;border-radius:3px;background:rgba(255,255,255,.3);overflow:hidden}
 #bfill{position:absolute;left:0;right:0;bottom:0;height:50%;background:#fff;border-radius:3px}
 #bpct{font-size:12px}
+#vol{position:absolute;z-index:7;left:18px;top:50%;transform:translateY(-50%);width:46px;padding:10px 0;border-radius:23px;background:rgba(0,0,0,.65);color:#fff;display:none;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+#vol.hint{opacity:.6}
+#vsp{font-size:20px;line-height:1}
+#vtrack{position:relative;width:6px;height:120px;border-radius:3px;background:rgba(255,255,255,.3);overflow:hidden}
+#vfill{position:absolute;left:0;right:0;bottom:0;height:100%;background:#fff;border-radius:3px}
+#vpct{font-size:12px}
 #brw{position:absolute;right:12px;top:50%;width:40px;height:180px;margin-top:-90px;z-index:6;display:none}
 #brw{display:none !important}
 #br{position:absolute;width:160px;height:30px;left:-60px;top:75px;margin:0;transform:rotate(-90deg);accent-color:#fff}
@@ -47,16 +55,18 @@ body.mini #qmenu{display:none !important}
 <div id="wrap">
   <div id="stage">
     <div id="frame"><div id="player"></div></div>
+    <div id="thumb"></div>
     <div id="shield"></div>
     <button id="big"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M8 5v14l11-7z"/></svg></button>
     <div id="msg"></div>
     <div id="qmenu"></div>
     <div id="bri"><div id="bsun">&#9728;</div><div id="btrack"><div id="bfill"></div></div><div id="bpct">50%</div></div>
+    <div id="vol"><div id="vsp">&#128266;</div><div id="vtrack"><div id="vfill"></div></div><div id="vpct">100%</div></div>
     <div id="brw"><input id="br" type="range" min="5" max="100" value="50"></div>
   </div>
   <div id="bar">
     <div id="r1">
-      <button id="pp"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M8 5v14l11-7z"/></svg></button>
+      <button id="pp"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M21 6h-2v9H6v2c0 .55.45 1 1 1h11l4 4V7c0-.55-.45-1-1-1zm-4 6V3c0-.55-.45-1-1-1H3c-.55 0-1 .45-1 1v14l4-4h10c.55 0 1-.45 1-1z"/></svg></button>
       <span class="t" id="tm">0:00 / 0:00</span>
       <input id="seek" type="range" min="0" max="1000" value="0">
       <button id="qbtn"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M19.14 12.94a7.1 7.1 0 0 0 .06-.94c0-.32-.02-.64-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.59-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.5.5 0 0 0-.59.22L2.74 8.87a.5.5 0 0 0 .12.64l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.12.22.37.3.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg></button>
@@ -106,9 +116,12 @@ function fitShield() {
   var s = $("shield").style;
   s.width = w + "px"; s.height = h + "px";
   s.left = ((W - w) / 2) + "px"; s.top = ((H - h) / 2) + "px";
+  var th = $("thumb").style;
+  th.width = w + "px"; th.height = h + "px"; th.left = s.left; th.top = s.top;
   var f = $("frame").style;
   f.width = w + "px"; f.height = h + "px";
   f.left = s.left; f.top = s.top;
+  try { applyQSize(); } catch (e) {}
 }
 window.addEventListener("resize", function () { fitShield(); setTimeout(fitShield, 300); });
 window.addEventListener("load", fitShield);
@@ -131,6 +144,7 @@ function showOvl(sticky) {
   $("big").classList.add("on");
   document.body.classList.add("ovl");
   hintBri();
+  hintVol();
   clearTimeout(ovlTimer);
   if (!sticky && isPlaying()) ovlTimer = setTimeout(hideOvl, 3000);
 }
@@ -139,12 +153,32 @@ function hideOvl() {
   $("big").classList.remove("on");
   document.body.classList.remove("ovl");
   if (!bg || !bg.on) $("bri").style.display = "none";
+  if (!vg || !vg.on) $("vol").style.display = "none";
+}
+
+/* ---------- म्यूज़िक मोड: वीडियो की जगह थंबनेल दिखे, सिर्फ़ गाना (आवाज़) बजे ---------- */
+var music = false, thumbId = "";
+function updateThumb() {
+  if (!music) return;
+  var id = "";
+  try { var d = p && p.getVideoData ? p.getVideoData() : null; id = d && d.video_id ? d.video_id : ""; } catch (e) {}
+  if (!id) id = VID;
+  if (!id || id === thumbId) return;
+  thumbId = id;
+  $("thumb").style.backgroundImage = "url(https://i.ytimg.com/vi/" + id + "/hqdefault.jpg)";
+}
+function setMusic(b) {
+  music = !!b;
+  document.body.classList.toggle("music", music);
+  thumbId = "";
+  updateThumb();
+  setTimeout(fitShield, 50);
 }
 
 function onState(e) {
   var s = e.data, playing = (s === 1 || s === 3);
+  updateThumb();
   var ic = playing ? ICON_PAUSE : ICON_PLAY;
-  $("pp").innerHTML = ic;
   $("big").innerHTML = ic;
   if (window.Native && Native.state) Native.state(s);
   if (s === 0) { p.seekTo(0, true); p.pauseVideo(); return; }
@@ -174,6 +208,7 @@ function onError() {
 }
 
 function tick() {
+  if (music) updateThumb();
   if (!p || !p.getDuration) return;
   var d = p.getDuration() || 0, c = p.getCurrentTime() || 0;
   if (!dragging && d > 0) $("seek").value = (c / d) * 1000;
@@ -220,7 +255,13 @@ $("shield").addEventListener("click", function (e) {
   }
 });
 $("big").addEventListener("click", function () { toggle(); });
-$("pp").addEventListener("click", toggle);
+/* नीचे की बार का पहला बटन अब कमेंट का है: टैप -> कमेंट नीचे खुलते हैं, फिर टैप -> बंद */
+$("pp").addEventListener("click", function () {
+  var id = "";
+  try { var d = p && p.getVideoData ? p.getVideoData() : null; id = d && d.video_id ? d.video_id : ""; } catch (e) {}
+  if (!id) id = VID;
+  if (window.Native && Native.comments) Native.comments(id || "");
+});
 
 /* ---------- फुलस्क्रीन में दो उंगली से ज़ूम (और ज़ूम में एक उंगली से खिसकाना) ---------- */
 var zs = 1, tx = 0, ty = 0, pinch = null, pan = null;
@@ -245,6 +286,10 @@ function inBriZone(t0) {
   var r = $("shield").getBoundingClientRect();
   return t0.clientX >= r.left + r.width * 0.6;     // दायाँ हिस्सा = ब्राइटनेस
 }
+function inVolZone(t0) {
+  var r = $("shield").getBoundingClientRect();
+  return t0.clientX <= r.left + r.width * 0.4;     // बायाँ हिस्सा = आवाज़
+}
 function inFs() { return document.body.classList.contains("fs"); }
 var sh = $("shield");
 sh.addEventListener("touchstart", function (e) {
@@ -253,7 +298,7 @@ sh.addEventListener("touchstart", function (e) {
     pan = null;
     pinch = { d: tdist(e.touches), z: zs, m: tmid(e.touches), tx: tx, ty: ty };
     e.preventDefault();
-  } else if (e.touches.length === 1 && zs > 1 && !inBriZone(e.touches[0])) {
+  } else if (e.touches.length === 1 && zs > 1 && !inBriZone(e.touches[0]) && !inVolZone(e.touches[0])) {
     pan = { x: e.touches[0].clientX, y: e.touches[0].clientY, tx: tx, ty: ty };
   }
 }, { passive: false });
@@ -284,6 +329,29 @@ sh.addEventListener("touchend", function (e) {
 var QN = { hd2160: "2160p", hd1440: "1440p", hd1080: "1080p", hd720: "720p", large: "480p", medium: "360p", small: "240p", tiny: "144p" };
 var QORDER = ["hd2160", "hd1440", "hd1080", "hd720", "large", "medium", "small", "tiny"];
 var qSel = "auto";
+/* YouTube ने क्वालिटी वाले API (setPlaybackQuality / suggestedQuality) बंद कर दिए हैं, इसलिए वह अनदेखा होता है।
+   अब YouTube प्लेयर के साइज़ से क्वालिटी चुनता है -> चुनी क्वालिटी के हिसाब से प्लेयर का साइज़ रखकर
+   उसे स्क्रीन जितना बड़ा दिखाते हैं (scale)। */
+var QW = { hd2160: 3840, hd1440: 2560, hd1080: 1920, hd720: 1280, large: 854, medium: 640, small: 426, tiny: 256 };
+function applyQSize() {
+  var el = $("player"), fr = $("frame");
+  if (!el || !fr) return;
+  var st = el.style;
+  if (typeof qSel === "undefined" || qSel === "auto" || !QW[qSel]) {
+    st.width = ""; st.height = ""; st.top = ""; st.left = ""; st.transform = ""; st.transformOrigin = "";
+    return;
+  }
+  var fw = fr.clientWidth, fh = fr.clientHeight;
+  if (!fw || !fh) return;
+  var dpr = window.devicePixelRatio || 1;
+  var w = Math.max(200, QW[qSel] / dpr);      /* YouTube प्लेयर कम से कम 200px चाहता है */
+  var s = fw / w;
+  var vh = fh / s;
+  var H = Math.max(200, vh + 240 / s);        /* ऊपर-नीचे की 240px पट्टी पहले की तरह छिपी रहे */
+  st.width = w + "px"; st.height = H + "px";
+  st.left = "0px"; st.top = ((vh - H) / 2) + "px";
+  st.transformOrigin = "0 0"; st.transform = "scale(" + s + ")";
+}
 function hideQ() { $("qmenu").style.display = "none"; }
 function openQ() {
   if (!p || !p.getAvailableQualityLevels) return;
@@ -306,6 +374,7 @@ function setQ(q) {
   hideQ();
   if (!p) return;
   qSel = q;
+  try { applyQSize(); } catch (e) {}
   var sq = (q === "auto") ? "default" : q;
   try {
     var d = p.getVideoData ? p.getVideoData() : null;
@@ -390,6 +459,58 @@ sh.addEventListener("touchmove", function (e) {
 }, { passive: false });
 sh.addEventListener("touchend", function () { bg = null; });
 sh.addEventListener("touchcancel", function () { bg = null; });
+
+/* ---------- फुलस्क्रीन में बाएँ हिस्से पर उँगली नीचे से ऊपर = वीडियो की आवाज़ बढ़ना (ऊपर से नीचे = घटना) ---------- */
+var vg = null, volTimer = null;
+function curVol() {
+  var v = 100;
+  try { if (p && p.getVolume) v = p.isMuted && p.isMuted() ? 0 : p.getVolume(); } catch (x) {}
+  return Math.max(0, Math.min(100, Math.round(v)));
+}
+function drawVol(v) {
+  $("vfill").style.height = v + "%";
+  $("vpct").textContent = v + "%";
+  $("vsp").innerHTML = v === 0 ? "&#128263;" : (v < 50 ? "&#128265;" : "&#128266;");
+  $("vol").style.display = "flex";
+}
+function showVol(v) {
+  drawVol(v);
+  $("vol").classList.remove("hint");
+  clearTimeout(volTimer);
+  volTimer = setTimeout(function () {
+    if (document.body.classList.contains("ovl")) hintVol(); else $("vol").style.display = "none";
+  }, 900);
+}
+function hintVol() {
+  if (!inFs()) return;
+  drawVol(curVol());
+  $("vol").classList.add("hint");
+}
+sh.addEventListener("touchstart", function (e) {
+  vg = null;
+  if (!inFs() || e.touches.length !== 1) return;
+  var r = sh.getBoundingClientRect(), t0 = e.touches[0];
+  if (!inVolZone(t0)) return;
+  vg = { y: t0.clientY, x: t0.clientX, v: curVol(), on: false, h: Math.max(120, r.height) };
+}, { passive: true });
+sh.addEventListener("touchmove", function (e) {
+  if (!vg || e.touches.length !== 1) { vg = null; return; }
+  var t0 = e.touches[0], dy = vg.y - t0.clientY, dx = t0.clientX - vg.x;
+  if (!vg.on) {
+    if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx) * 1.5) vg.on = true; else return;
+  }
+  e.preventDefault();
+  var v = Math.round(Math.max(0, Math.min(100, vg.v + (dy / (vg.h * 0.8)) * 100)));
+  try {
+    if (p && p.setVolume) {
+      if (v > 0 && p.isMuted && p.isMuted()) p.unMute();
+      p.setVolume(v);
+    }
+  } catch (x) {}
+  showVol(v);
+}, { passive: false });
+sh.addEventListener("touchend", function () { vg = null; });
+sh.addEventListener("touchcancel", function () { vg = null; });
 
 /* ---------- फुलस्क्रीन ---------- */
 /* पूरा स्क्रीन ऐप खुद संभालता है (आड़ा करके, बिना बार) */
