@@ -1049,7 +1049,7 @@ public class MainActivity extends Activity {
         });
         card.setClipToOutline(true);
 
-        pWeb = new WebView(this);
+        pWeb = new BgWebView(this);
         pWeb.setBackgroundColor(Color.BLACK);
         card.addView(pWeb, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -1155,7 +1155,7 @@ public class MainActivity extends Activity {
                 dp(MINI_W), dp(MINI_CARD_H), Gravity.TOP | Gravity.LEFT));
         buildFsNotice();
         buildMusicBar();
-        buildComments();
+        // कमेंट पैनल हटाया (buildComments() अब नहीं बनता)
 
         root.addView(playerLayer, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -1409,7 +1409,8 @@ public class MainActivity extends Activity {
             card.getLocationOnScreen(loc);
             float x = ev.getRawX(), y = ev.getRawY();
             int videoH = card.getHeight() - dp(BAR_DP);   // सिर्फ़ वीडियो वाला हिस्सा
-            dragCand = x >= loc[0] && x <= loc[0] + card.getWidth()
+            // सिर्फ़ बीच के 20% हिस्से से नीचे खींचने पर मिनिमाइज़; बाएँ = आवाज़, दाएँ = ब्राइटनेस
+            dragCand = x >= loc[0] + card.getWidth() * 0.4f && x <= loc[0] + card.getWidth() * 0.6f
                     && y >= loc[1] && y <= loc[1] + videoH;
             dragX0 = x;
             dragY0 = y;
@@ -2556,7 +2557,7 @@ public class MainActivity extends Activity {
         public void run() {
             // छोटी विंडो को ✕ से बंद किया गया (ऐप सामने नहीं आया) -> वीडियो रोक दो
             if (!resumedNow && !inPip && mode != MODE_NONE && pWeb != null) {
-                pWeb.evaluateJavascript("try{p.pauseVideo()}catch(e){}", null);
+                stopPlayer();
             }
         }
     };
@@ -2572,6 +2573,7 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------
     private static final String ACT_PIP_PP = "com.videoplayer.app.PIP_PP";
     private static final String ACT_PIP_CLOSE = "com.videoplayer.app.PIP_CLOSE";
+    private static final String ACT_PIP_NEXT = "com.videoplayer.app.PIP_NEXT";
     private BroadcastReceiver pipReceiver;
 
     private PictureInPictureParams pipParams() {
@@ -2584,8 +2586,8 @@ public class MainActivity extends Activity {
                             : android.R.drawable.ic_media_play),
                     vidPlaying ? "रोकें" : "चलाएँ", "play/pause", pipIntent(ACT_PIP_PP, 11)));
             acts.add(new RemoteAction(
-                    Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
-                    "बंद करें", "close", pipIntent(ACT_PIP_CLOSE, 12)));
+                    Icon.createWithResource(this, android.R.drawable.ic_media_next),
+                    "अगला", "next", pipIntent(ACT_PIP_NEXT, 12)));
             b.setActions(acts);
         }
         return b.build();
@@ -2604,6 +2606,8 @@ public class MainActivity extends Activity {
                 String a = in == null ? null : in.getAction();
                 if (ACT_PIP_PP.equals(a)) {
                     if (pWeb != null) pWeb.evaluateJavascript("toggle()", null);
+                } else if (ACT_PIP_NEXT.equals(a)) {
+                    playNext();
                 } else if (ACT_PIP_CLOSE.equals(a)) {
                     stopPlayer();
                     if (inPip) moveTaskToBack(true);   // छोटी विंडो भी हट जाए
@@ -2613,8 +2617,22 @@ public class MainActivity extends Activity {
         IntentFilter f = new IntentFilter();
         f.addAction(ACT_PIP_PP);
         f.addAction(ACT_PIP_CLOSE);
+        f.addAction(ACT_PIP_NEXT);
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(pipReceiver, f, Context.RECEIVER_NOT_EXPORTED);
         else registerReceiver(pipReceiver, f);
+    }
+
+    /** म्यूज़िक मोड में ऐप नीचे / स्क्रीन बंद होने पर भी WebView को "दिखता हुआ" मानो, ताकि गाना और आवाज़ चलती रहे */
+    private class BgWebView extends WebView {
+        BgWebView(Context c) {
+            super(c);
+        }
+
+        @Override
+        protected void onWindowVisibilityChanged(int visibility) {
+            if (musicOn && mode != MODE_NONE && visibility != View.GONE) visibility = View.VISIBLE;
+            super.onWindowVisibilityChanged(visibility);
+        }
     }
 
     private void enterPip() {
