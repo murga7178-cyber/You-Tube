@@ -14,6 +14,9 @@ body.music #thumb{display:block}
 #shield{position:absolute;left:0;top:0;width:100%;height:100%;z-index:2;touch-action:none}
 #big{position:absolute;z-index:3;left:50%;top:50%;width:88px;height:88px;margin:-44px 0 0 -44px;border-radius:50%;background:#0b0b0b;color:#fff;font-size:36px;border:0;padding:0;display:flex;align-items:center;justify-content:center;opacity:0;visibility:hidden;transition:opacity .2s}
 #big.on{opacity:1;visibility:visible}
+#nxt{position:absolute;z-index:3;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 70px;border-radius:50%;background:#0b0b0b;color:#fff;font-size:22px;border:0;padding:0;display:flex;align-items:center;justify-content:center;opacity:0;visibility:hidden;transition:opacity .2s}
+#big.on + #nxt{opacity:1;visibility:visible}
+body.mini #nxt{display:none}
 #msg{position:absolute;z-index:4;left:16px;right:16px;top:50%;transform:translateY(-50%);text-align:center;color:#fff;font-size:15px;line-height:1.5;display:none;background:rgba(0,0,0,.8);padding:14px;border-radius:12px}
 #bar{flex:none;background:#0f0f0f;color:#fff;font-size:13px}
 body.fs #bar{display:none;position:absolute;left:0;right:0;bottom:0;z-index:5;background:linear-gradient(rgba(0,0,0,0),rgba(0,0,0,.85))}
@@ -58,6 +61,7 @@ body.mini #qmenu{display:none !important}
     <div id="thumb"></div>
     <div id="shield"></div>
     <button id="big"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M8 5v14l11-7z"/></svg></button>
+    <button id="nxt"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
     <div id="msg"></div>
     <div id="qmenu"></div>
     <div id="bri"><div id="bsun">&#9728;</div><div id="btrack"><div id="bfill"></div></div><div id="bpct">50%</div></div>
@@ -178,10 +182,14 @@ function setMusic(b) {
 function onState(e) {
   var s = e.data, playing = (s === 1 || s === 3);
   updateThumb();
+  sendMeta();
   var ic = playing ? ICON_PAUSE : ICON_PLAY;
   $("big").innerHTML = ic;
   if (window.Native && Native.state) Native.state(s);
-  if (s === 0) { p.seekTo(0, true); p.pauseVideo(); return; }
+  if (s === 0) {
+    if (music && window.Native && Native.next) { Native.next(); return; }   /* म्यूज़िक मोड: खत्म होते ही अगला गाना */
+    p.seekTo(0, true); p.pauseVideo(); return;
+  }
   if (s === 2) showOvl(true);                 // रुका हुआ: ▶ दिखता रहे
   else if (s === 1 && !mini) {
     $("big").classList.add("on");             // YouTube का अपना आइकन हमारे बटन के पीछे छिपे
@@ -202,15 +210,19 @@ function setMini(b) {
 
 function onError() {
   if (window.Native) Native.ready();
+  if (music && window.Native && Native.skipError) { Native.skipError(); return; }
   var m = $("msg");
   m.style.display = "block";
   m.textContent = "यह वीडियो यहाँ नहीं चल सकता (मालिक ने बाहर चलाने की अनुमति नहीं दी है या वीडियो उपलब्ध नहीं है)।";
 }
 
+var lastProg = 0, lastMeta = "";
 function tick() {
   if (music) updateThumb();
+  sendMeta();
   if (!p || !p.getDuration) return;
   var d = p.getDuration() || 0, c = p.getCurrentTime() || 0;
+  if (window.Native && Native.progress && Date.now() - lastProg > 1000) { lastProg = Date.now(); Native.progress(c, d); }
   if (!dragging && d > 0) $("seek").value = (c / d) * 1000;
   if (!dragging && Date.now() > flashUntil) $("tm").textContent = fmt(c) + " / " + fmt(d);
 }
@@ -218,6 +230,28 @@ function tick() {
 function toggle() {
   if (!p || !p.getPlayerState) return;
   if (isPlaying()) p.pauseVideo(); else p.playVideo();
+}
+
+/* गाने का नाम ऐप को भेजो (नीचे का बार + नोटिफ़िकेशन); नाम देर से आता है, इसलिए tick भी देखता है */
+function sendMeta() {
+  if (!window.Native || !Native.meta || !p || !p.getVideoData) return;
+  var d = null;
+  try { d = p.getVideoData(); } catch (e) {}
+  if (!d || !d.title) return;
+  var key = (d.video_id || "") + "|" + d.title;
+  if (key === lastMeta) return;
+  lastMeta = key;
+  Native.meta(d.title, d.video_id || VID);
+}
+
+/* ऐप कहे तो उसी प्लेयर में दूसरा वीडियो/गाना लगाओ (पेज दोबारा लोड नहीं होता, आवाज़ बनी रहती है) */
+function loadId(id) {
+  if (!id || !p || !p.loadVideoById) return;
+  VID = id;
+  $("msg").style.display = "none";
+  lastMeta = ""; thumbId = "";
+  try { p.loadVideoById({ videoId: id, startSeconds: 0 }); } catch (e) {}
+  updateThumb();
 }
 
 /* ---------- 10 सेकंड आगे / पीछे ---------- */
@@ -255,6 +289,7 @@ $("shield").addEventListener("click", function (e) {
   }
 });
 $("big").addEventListener("click", function () { toggle(); });
+$("nxt").addEventListener("click", function () { if (window.Native && Native.next) Native.next(); });
 /* नीचे की बार का पहला बटन अब कमेंट का है: टैप -> कमेंट नीचे खुलते हैं, फिर टैप -> बंद */
 $("pp").addEventListener("click", function () {
   var id = "";
