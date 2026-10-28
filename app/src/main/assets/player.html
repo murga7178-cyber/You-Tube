@@ -16,7 +16,7 @@ body.music #thumb{display:block}
 #big.on{opacity:1;visibility:visible}
 #nxt{position:absolute;z-index:3;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 70px;border-radius:50%;background:#0b0b0b;color:#fff;font-size:22px;border:0;padding:0;display:flex;align-items:center;justify-content:center;opacity:0;visibility:hidden;transition:opacity .2s}
 #big.on + #nxt{opacity:1;visibility:visible}
-body.mini #nxt{display:none}
+body.mini #nxt,body.mini #big{display:none !important}
 #msg{position:absolute;z-index:4;left:16px;right:16px;top:50%;transform:translateY(-50%);text-align:center;color:#fff;font-size:15px;line-height:1.5;display:none;background:rgba(0,0,0,.8);padding:14px;border-radius:12px}
 #bar{flex:none;background:#0f0f0f;color:#fff;font-size:13px}
 body.fs #bar{display:none;position:absolute;left:0;right:0;bottom:0;z-index:5;background:linear-gradient(rgba(0,0,0,0),rgba(0,0,0,.85))}
@@ -34,6 +34,9 @@ body.mini #bar{display:none !important}
 #btrack{position:relative;width:6px;height:120px;border-radius:3px;background:rgba(255,255,255,.3);overflow:hidden}
 #bfill{position:absolute;left:0;right:0;bottom:0;height:50%;background:#fff;border-radius:3px}
 #bpct{font-size:12px}
+body:not(.fs) #btrack,body:not(.fs) #vtrack{height:60px}
+body:not(.fs) #bri,body:not(.fs) #vol{padding:6px 0;gap:4px;width:40px;right:8px}
+body:not(.fs) #vol{right:auto;left:8px}
 #vol{position:absolute;z-index:7;left:18px;top:50%;transform:translateY(-50%);width:46px;padding:10px 0;border-radius:23px;background:rgba(0,0,0,.65);color:#fff;display:none;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
 #vol.hint{opacity:.6}
 #vsp{font-size:20px;line-height:1}
@@ -70,7 +73,6 @@ body.mini #qmenu{display:none !important}
   </div>
   <div id="bar">
     <div id="r1">
-      <button id="pp"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M21 6h-2v9H6v2c0 .55.45 1 1 1h11l4 4V7c0-.55-.45-1-1-1zm-4 6V3c0-.55-.45-1-1-1H3c-.55 0-1 .45-1 1v14l4-4h10c.55 0 1-.45 1-1z"/></svg></button>
       <span class="t" id="tm">0:00 / 0:00</span>
       <input id="seek" type="range" min="0" max="1000" value="0">
       <button id="qbtn"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="#fff" d="M19.14 12.94a7.1 7.1 0 0 0 .06-.94c0-.32-.02-.64-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.59-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.5.5 0 0 0-.59.22L2.74 8.87a.5.5 0 0 0 .12.64l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.12.22.37.3.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg></button>
@@ -192,6 +194,7 @@ function onState(e) {
   }
   if (s === 2) showOvl(true);                 // रुका हुआ: ▶ दिखता रहे
   else if (s === 1 && !mini) {
+    userPaused = false;
     $("big").classList.add("on");             // YouTube का अपना आइकन हमारे बटन के पीछे छिपे
     clearTimeout(ovlTimer);
     ovlTimer = setTimeout(hideOvl, 1500);     // चलना शुरू: थोड़ी देर बाद छिप जाए
@@ -220,6 +223,13 @@ var lastProg = 0, lastMeta = "";
 function tick() {
   if (music) updateThumb();
   sendMeta();
+  /* म्यूज़िक मोड: बैकग्राउंड / लॉक स्क्रीन में अपने-आप रुक गया या म्यूट हो गया तो फिर चलाओ (हमने खुद नहीं रोका हो तो) */
+  if (music && p && p.getPlayerState) {
+    try {
+      if (!userPaused && p.getPlayerState() === 2) p.playVideo();
+      if (p.isMuted && p.isMuted()) p.unMute();
+    } catch (e) {}
+  }
   if (!p || !p.getDuration) return;
   var d = p.getDuration() || 0, c = p.getCurrentTime() || 0;
   if (window.Native && Native.progress && Date.now() - lastProg > 1000) { lastProg = Date.now(); Native.progress(c, d); }
@@ -229,8 +239,9 @@ function tick() {
 
 function toggle() {
   if (!p || !p.getPlayerState) return;
-  if (isPlaying()) p.pauseVideo(); else p.playVideo();
+  if (isPlaying()) { userPaused = true; p.pauseVideo(); } else { userPaused = false; p.playVideo(); }
 }
+var userPaused = false;
 
 /* गाने का नाम ऐप को भेजो (नीचे का बार + नोटिफ़िकेशन); नाम देर से आता है, इसलिए tick भी देखता है */
 function sendMeta() {
@@ -291,12 +302,6 @@ $("shield").addEventListener("click", function (e) {
 $("big").addEventListener("click", function () { toggle(); });
 $("nxt").addEventListener("click", function () { if (window.Native && Native.next) Native.next(); });
 /* नीचे की बार का पहला बटन अब कमेंट का है: टैप -> कमेंट नीचे खुलते हैं, फिर टैप -> बंद */
-$("pp").addEventListener("click", function () {
-  var id = "";
-  try { var d = p && p.getVideoData ? p.getVideoData() : null; id = d && d.video_id ? d.video_id : ""; } catch (e) {}
-  if (!id) id = VID;
-  if (window.Native && Native.comments) Native.comments(id || "");
-});
 
 /* ---------- फुलस्क्रीन में दो उंगली से ज़ूम (और ज़ूम में एक उंगली से खिसकाना) ---------- */
 var zs = 1, tx = 0, ty = 0, pinch = null, pan = null;
@@ -445,9 +450,22 @@ $("seek").addEventListener("change", function () {
 });
 
 /* ---------- ब्राइटनेस ---------- */
-try { if (window.Native && Native.getBrightness) $("br").value = Native.getBrightness(); } catch (e) {}
+/* ब्राइटनेस सिर्फ़ इस प्लेयर के वीडियो की (फ़ोन / बाकी ऐप की ब्राइटनेस नहीं बदलती): 50 = सामान्य */
+var vb = 50;
+try { vb = parseInt(localStorage.getItem("vb"), 10); } catch (e) {}
+if (!(vb >= 5 && vb <= 100)) vb = 50;
+function applyVidBright(v) {
+  vb = v;
+  var f = v <= 50 ? 0.15 + (v - 5) / 45 * 0.85 : 1 + (v - 50) / 50 * 0.6;
+  var css = (v === 50) ? "" : "brightness(" + f.toFixed(2) + ")";
+  $("frame").style.filter = css;
+  $("thumb").style.filter = css;
+  try { localStorage.setItem("vb", String(v)); } catch (e) {}
+}
+$("br").value = vb;
+applyVidBright(vb);
 $("br").addEventListener("input", function () {
-  if (window.Native && Native.setBrightness) Native.setBrightness(parseInt(this.value, 10));
+  applyVidBright(parseInt(this.value, 10));
 });
 
 
@@ -463,7 +481,7 @@ function showBri(v) {                 // उँगली चलते समय:
   $("bri").classList.remove("hint");
   clearTimeout(briTimer);
   briTimer = setTimeout(function () {
-    if (document.body.classList.contains("ovl")) hintBri(); else $("bri").style.display = "none";
+    if (inFs() && document.body.classList.contains("ovl")) hintBri(); else $("bri").style.display = "none";
   }, 900);
 }
 function hintBri() {                  // बटन दिखते समय: हल्का सा, ताकि पता चले ब्राइटनेस की पट्टी यहाँ है
@@ -473,11 +491,10 @@ function hintBri() {                  // बटन दिखते समय: �
 }
 sh.addEventListener("touchstart", function (e) {
   bg = null;
-  if (!inFs() || e.touches.length !== 1) return;
+  if (mini || e.touches.length !== 1) return;   /* अब बिना फुलस्क्रीन के भी चलेगा */
   var r = sh.getBoundingClientRect(), t0 = e.touches[0];
   if (!inBriZone(t0)) return;   // सिर्फ़ दायाँ हिस्सा (ज़ूम में भी चलेगा)
-  var cur = parseInt($("br").value, 10) || 50;
-  try { if (window.Native && Native.getBrightness) cur = Native.getBrightness(); } catch (x) {}
+  var cur = vb;
   bg = { y: t0.clientY, x: t0.clientX, b: cur, on: false, h: Math.max(120, r.height) };
 }, { passive: true });
 sh.addEventListener("touchmove", function (e) {
@@ -489,7 +506,7 @@ sh.addEventListener("touchmove", function (e) {
   e.preventDefault();
   var v = Math.round(Math.max(5, Math.min(100, bg.b + (dy / (bg.h * 0.8)) * 100)));
   $("br").value = v;
-  if (window.Native && Native.setBrightness) Native.setBrightness(v);
+  applyVidBright(v);
   showBri(v);
 }, { passive: false });
 sh.addEventListener("touchend", function () { bg = null; });
@@ -513,7 +530,7 @@ function showVol(v) {
   $("vol").classList.remove("hint");
   clearTimeout(volTimer);
   volTimer = setTimeout(function () {
-    if (document.body.classList.contains("ovl")) hintVol(); else $("vol").style.display = "none";
+    if (inFs() && document.body.classList.contains("ovl")) hintVol(); else $("vol").style.display = "none";
   }, 900);
 }
 function hintVol() {
@@ -523,7 +540,7 @@ function hintVol() {
 }
 sh.addEventListener("touchstart", function (e) {
   vg = null;
-  if (!inFs() || e.touches.length !== 1) return;
+  if (mini || e.touches.length !== 1) return;
   var r = sh.getBoundingClientRect(), t0 = e.touches[0];
   if (!inVolZone(t0)) return;
   vg = { y: t0.clientY, x: t0.clientX, v: curVol(), on: false, h: Math.max(120, r.height) };
