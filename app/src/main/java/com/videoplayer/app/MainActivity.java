@@ -2585,9 +2585,6 @@ public class MainActivity extends Activity {
                     Icon.createWithResource(this, vidPlaying ? android.R.drawable.ic_media_pause
                             : android.R.drawable.ic_media_play),
                     vidPlaying ? "रोकें" : "चलाएँ", "play/pause", pipIntent(ACT_PIP_PP, 11)));
-            acts.add(new RemoteAction(
-                    Icon.createWithResource(this, android.R.drawable.ic_media_next),
-                    "अगला", "next", pipIntent(ACT_PIP_NEXT, 12)));
             b.setActions(acts);
         }
         return b.build();
@@ -2658,8 +2655,16 @@ public class MainActivity extends Activity {
             corner = 0;
             card.invalidateOutline();
             applyCardLayout();
-            pWeb.evaluateJavascript("setMini(true)", null);
+            miniBox.setVisibility(View.GONE);      // अंदर के अपने बटन नहीं; सिर्फ़ सिस्टम का ▶/❚❚ और ✕
+            pWeb.evaluateJavascript("setMini(true);setPip(true);keepAlive()", null);
+            pWeb.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (inPip && pWeb != null) pWeb.evaluateJavascript("keepAlive()", null);
+                }
+            }, 700);
         } else {
+            pWeb.evaluateJavascript("setPip(false)", null);
             corner = (mode == MODE_MINI) ? dp(12) : dp(16);
             card.invalidateOutline();
             fullBg.setVisibility(mode == MODE_FULL ? View.VISIBLE : View.GONE);
