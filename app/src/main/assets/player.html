@@ -22,6 +22,7 @@ body.mini #nxt,body.mini #big{display:none !important}
 body.fs #bar{display:none;position:absolute;left:0;right:0;bottom:0;z-index:5;background:linear-gradient(rgba(0,0,0,0),rgba(0,0,0,.85))}
 body.fs.ovl #bar{display:block}
 body.mini #bar{display:none !important}
+body.pip #bar,body.pip #big,body.pip #nxt,body.pip #qmenu,body.pip #bri,body.pip #vol,body.pip #msg{display:none !important}
 #r1,#r2{display:flex;align-items:center;gap:8px;padding:0 10px}
 #r1{height:52px}
 #r2{height:44px;justify-content:center;gap:16px}
@@ -217,6 +218,21 @@ function onError() {
   var m = $("msg");
   m.style.display = "block";
   m.textContent = "यह वीडियो यहाँ नहीं चल सकता (मालिक ने बाहर चलाने की अनुमति नहीं दी है या वीडियो उपलब्ध नहीं है)।";
+}
+
+/* बाहर की छोटी (PiP) विंडो: सिर्फ़ वीडियो, बाकी सब छिपा */
+function setPip(b) {
+  document.body.classList.toggle("pip", !!b);
+  hideOvl(); hideQ();
+  setTimeout(fitShield, 100);
+}
+
+/* ऐप से बाहर होने पर वीडियो रुका / म्यूट मिले तो (हमने खुद नहीं रोका हो तो) वापस चालू करो */
+function keepAlive() {
+  try {
+    if (p && p.isMuted && p.isMuted()) p.unMute();
+    if (p && p.getPlayerState && p.getPlayerState() === 2 && !userPaused) p.playVideo();
+  } catch (e) {}
 }
 
 var lastProg = 0, lastMeta = "";
