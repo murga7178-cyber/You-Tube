@@ -150,6 +150,13 @@ public class MainActivity extends Activity {
             + "},true);"
             + "})();";
 
+    // YouTube के नीचे वाले बटन (होम / Shorts / सब्सक्रिप्शन / आप) हटाने की स्टाइल; उनकी जगह VIP बार है
+    private static final String HIDE_NAV =
+            "(function(){try{var id='vp-nonav';if(document.getElementById(id))return;"
+            + "var st=document.createElement('style');st.id=id;"
+            + "st.textContent='ytm-pivot-bar-renderer,.pivot-bar,.pivot-bar-wrapper{display:none!important}';"
+            + "(document.head||document.documentElement).appendChild(st);}catch(x){}})();";
+
     // YouTube की आवाज़-खोज (माइक) के लिए: फोन की अपनी Speech Recognition से जोड़ता है
     private static final String SPEECH_JS =
             "(function(){"
@@ -205,7 +212,7 @@ public class MainActivity extends Activity {
     private boolean rewardedDone;      // VIP 1 या उससे ऊपर
     private int vipLevel;               // 0..VIP_MAX
     private static final int VIP_MAX = 5;
-    private static final boolean VIP_PERSIST = false;   // true करने पर VIP ऐप बंद होने के बाद भी याद रहे
+    private static final boolean VIP_PERSIST = true;   // true करने पर VIP ऐप बंद होने के बाद भी याद रहे
     private static final int VIP_CARD_H = 46;           // dp, नीचे का VIP कार्ड
     // ऐप खुलने के बाद कितनी बार फुलस्क्रीन हुआ; FREE_FULLSCREENS बार मुफ़्त, उसके बाद रिवॉर्डेड ज़रूरी
     private static final int FREE_FULLSCREENS = 5;
@@ -292,13 +299,11 @@ public class MainActivity extends Activity {
 
         sensorMgr = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
         proxSensor = sensorMgr == null ? null : sensorMgr.getDefaultSensor(Sensor.TYPE_PROXIMITY);
-        waveOn = proxSensor != null
+        loadVip();   // VIP, चुने फीचर, 24 घंटे की जाँच (पहले), फिर स्विच की हालत
+        waveOn = proxSensor != null && vipHas(F_WAVE)
                 && getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_WAVE, false);
-        musicOn = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_MUSIC, false);
-        if (VIP_PERSIST) {
-            vipLevel = Math.max(0, Math.min(VIP_MAX, getSharedPreferences(PREFS, MODE_PRIVATE).getInt("vip_level", 0)));
-            rewardedDone = vipLevel >= 1;
-        }
+        musicOn = vipHas(F_MUSIC)
+                && getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_MUSIC, false);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.WHITE);
@@ -589,23 +594,18 @@ public class MainActivity extends Activity {
     /** फुलस्क्रीन (वर्गाकार) बटन: रिवॉर्डेड देख चुके हों तो सीधे फुलस्क्रीन, वरना नोटिस (वीडियो चलता रहता है) */
     private void requestFullscreen() {
         if (mode == MODE_NONE || fsOn || rewShowing) return;
-        if (rewardedDone || !adsReady) {
+        if (vipHas(F_FULL)) {
             setFullscreen(true);
             return;
         }
-        if (fsCount < FREE_FULLSCREENS) {
-            fsCount++;                 // शुरू के 5 बार बिना विज्ञापन
-            setFullscreen(true);
-            return;
-        }
-        showFsNotice();
+        showFeatureGate(F_FULL);      // कोई फ़्री बार नहीं: VIP में चुना हो तभी फुलस्क्रीन
     }
 
     /** thenFull = true: पूरा देखने के बाद अपने-आप फुलस्क्रीन; false: सिर्फ़ ऊपर वाले बटन से देखा */
     private void startRewarded(final boolean thenFull) {
         if (rewShowing) return;
         if (vipLevel >= VIP_MAX) {
-            Toast.makeText(this, "👑 आप VIP " + VIP_MAX + " हैं, सारे फीचर चालू ✅", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "👑 आप सबसे ऊँचे VIP " + VIP_MAX + " पर हैं", Toast.LENGTH_SHORT).show();
             if (thenFull && mode != MODE_NONE && !fsOn) setFullscreen(true);
             return;
         }
@@ -657,18 +657,16 @@ public class MainActivity extends Activity {
                 boolean wasMusic = musicAfterReward;
                 musicAfterReward = false;
                 if (done) {
+                    vipExpireIfNeeded();
+                    if (vipLevel == 0) vipStart = System.currentTimeMillis();   // 24 घंटे यहीं से गिनें
                     vipLevel = Math.min(VIP_MAX, vipLevel + 1);
                     rewardedDone = vipLevel >= 1;
-                    if (VIP_PERSIST) {
-                        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putInt("vip_level", vipLevel).apply();
-                    }
+                    saveVip();
                     updateRewBtn();
                     updateVipCard();
                     refreshVipPage();
-                    Toast.makeText(MainActivity.this, "🎉 VIP " + vipLevel + " चालू!\n" + vipShort(vipLevel),
+                    Toast.makeText(MainActivity.this, "🎉 VIP " + vipLevel + " मिल गया!\nअब VIP पेज पर कोई एक फीचर चुनें",
                             Toast.LENGTH_LONG).show();
-                    if (wasWave && vipLevel >= 1 && waveSwitch != null) waveSwitch.setChecked(true);
-                    if (wasMusic && vipLevel >= 2 && musicSwitch != null) musicSwitch.setChecked(true);
                     loadRewarded();                       // अगले VIP के लिए
                 } else {
                     loadRewarded();                       // अगली बार के लिए
@@ -681,10 +679,10 @@ public class MainActivity extends Activity {
     private void updateRewBtn() {
         if (rewBtn == null) return;
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                vipLevel >= VIP_MAX ? new int[]{0xFF1B8F3A, 0xFF2ECC71} : new int[]{0xFFB8860B, 0xFFFFD54F});
+                vipLevel >= 1 ? new int[]{0xFF1B8F3A, 0xFF2ECC71} : new int[]{0xFFB8860B, 0xFFFFD54F});
         g.setCornerRadius(dp(20));
         rewBtn.setBackground(g);
-        rewBtn.setTextColor(vipLevel >= VIP_MAX ? Color.WHITE : 0xFF3A2A00);
+        rewBtn.setTextColor(vipLevel >= 1 ? Color.WHITE : 0xFF3A2A00);
         rewBtn.setText(vipLevel <= 0 ? "👑  VIP पाएँ" : "👑  VIP " + vipLevel + (vipLevel >= VIP_MAX ? " ✅" : ""));
     }
 
@@ -692,28 +690,118 @@ public class MainActivity extends Activity {
     // VIP: हर रिवॉर्डेड वीडियो पूरा देखने पर अगला VIP (1 से 5), हर VIP पर नया फीचर
     // ------------------------------------------------------------------
     private LinearLayout vipCard, vipBody;
-    private TextView vipCardTxt;
+    private TextView vipCardTxt, vipCardGo;
     private android.app.Dialog vipDialog;
+    private android.app.AlertDialog featureDialog;
+
+    // फीचर नंबर (VIP पेज में इसी क्रम में दिखते हैं)
+    private static final int F_WAVE = 1, F_MUSIC = 2, F_INLINE = 3, F_MINIMIZE = 4, F_FULL = 5;
+    private static final long VIP_LIFE_MS = 24L * 60L * 60L * 1000L;   // 24 घंटे में सारे VIP ख़त्म
+    private int vipPicks;      // चुने हुए फीचर (bit f = फीचर f)
+    private long vipStart;     // पहला VIP मिलने का समय (ms)
 
     private static final String[] VIP_TITLE = {
             "✋ हाथ से अगला Shorts",
             "🎵 म्यूज़िक मोड",
             "▶️ पेज पर ही वीडियो देखें",
             "🪟 मिनिमाइज करके चलाएँ",
-            "⭐ आगे के नए फीचर"
+            "⛶ फुल स्क्रीन"
     };
     private static final String[] VIP_DESC = {
             "हाथ लहराकर (फ़ोन के सेंसर के ऊपर) अगला Shorts चलाएँ, उँगली से स्वाइप की ज़रूरत नहीं।",
             "म्यूज़िक स्विच चालू करें: वीडियो की जगह थंबनेल दिखेगा और सिर्फ़ गाना बजेगा। स्क्रीन बंद या ऐप नीचे होने पर भी चलता रहेगा।",
             "YouTube पेज पर जिस वीडियो पर क्लिक करें, वह वहीं उसी थंबनेल पर चलेगा। वहीं पर नीचे की पट्टी से वीडियो आगे-पीछे (स्क्रॉल) भी कर सकते हैं।",
             "ऐप को मिनिमाइज करके वीडियो अपनी होम स्क्रीन और दूसरी ऐप्स के ऊपर छोटी विंडो में चलाएँ। उसे खिसकाएँ, बड़ा-छोटा करें, रोकें या बंद करें।",
-            "VIP 5 पर पहुँचकर सारे फीचर चालू रहेंगे। आगे जो भी नए फीचर आएँगे, वे यहीं जुड़ते जाएँगे।"
+            "वीडियो को पूरी स्क्रीन में आड़ा करके (फुल स्क्रीन) देखें।"
     };
 
     private String vipShort(int lv) {
         return (lv >= 1 && lv <= VIP_MAX) ? VIP_TITLE[lv - 1] : "";
     }
 
+    /** यह फीचर इस VIP में चुना हुआ है? (24 घंटे पूरे हो गए हों तो पहले सब ख़त्म) */
+    private boolean vipHas(int f) {
+        vipExpireIfNeeded();
+        return vipLevel > 0 && (vipPicks & (1 << f)) != 0;
+    }
+
+    private int vipPicksLeft() {
+        return Math.max(0, vipLevel - Integer.bitCount(vipPicks));
+    }
+
+    private void saveVip() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putInt("vip_level", vipLevel)
+                .putInt("vip_picks", vipPicks)
+                .putLong("vip_start", vipStart)
+                .apply();
+    }
+
+    private void loadVip() {
+        android.content.SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        vipLevel = Math.max(0, Math.min(VIP_MAX, sp.getInt("vip_level", 0)));
+        vipPicks = sp.getInt("vip_picks", 0);
+        vipStart = sp.getLong("vip_start", 0L);
+        rewardedDone = vipLevel >= 1;
+        vipExpireIfNeeded();
+    }
+
+    /** 24 घंटे पूरे (या फ़ोन की घड़ी पीछे की गई) -> सारे VIP और चुने फीचर ख़त्म. true = अभी ख़त्म हुए */
+    private boolean vipExpireIfNeeded() {
+        if (vipLevel <= 0 && vipPicks == 0) return false;
+        long age = System.currentTimeMillis() - vipStart;
+        if (vipStart > 0 && age >= 0 && age < VIP_LIFE_MS) return false;
+        vipLevel = 0;
+        vipPicks = 0;
+        vipStart = 0;
+        rewardedDone = false;
+        saveVip();
+        onVipEnded();
+        return true;
+    }
+
+    private void onVipEnded() {
+        if (root == null) return;       // ऐप अभी बन ही रही है
+        if (waveSwitch != null && waveSwitch.isChecked()) waveSwitch.setChecked(false);
+        if (musicSwitch != null && musicSwitch.isChecked()) musicSwitch.setChecked(false);
+        updateRewBtn();
+        updateVipCard();
+        refreshVipPage();
+        Toast.makeText(this, "⏰ 24 घंटे पूरे हुए, सारे VIP ख़त्म हो गए", Toast.LENGTH_LONG).show();
+    }
+
+    private final Runnable vipTick = new Runnable() {
+        @Override
+        public void run() {
+            vipExpireIfNeeded();
+            if (root != null) root.postDelayed(this, 30000);
+        }
+    };
+
+    /** फीचर इस्तेमाल करने की कोशिश पर, अगर VIP में चुना नहीं है */
+    private void showFeatureGate(final int f) {
+        if (isFinishing() || (featureDialog != null && featureDialog.isShowing())) return;
+        String why;
+        if (vipLevel <= 0) {
+            why = "अभी आप VIP नहीं हैं। एक रिवॉर्डेड वीडियो पूरा देखकर VIP 1 पाएँ, फिर यह फीचर चुनें।";
+        } else if (vipPicksLeft() > 0) {
+            why = "आपके पास " + vipPicksLeft() + " चुनाव बचा है। VIP पेज पर जाकर इसे चुनें।";
+        } else {
+            why = "आपके VIP " + vipLevel + " के सारे चुनाव इस्तेमाल हो चुके हैं। यह फीचर चाहिए तो VIP बढ़ाएँ।";
+        }
+        featureDialog = new android.app.AlertDialog.Builder(this)
+                .setMessage(VIP_TITLE[f - 1] + " चलाने के लिए इसे VIP में चुनना होगा।\n\n" + why)
+                .setPositiveButton("👑 VIP देखें", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        showVipPage();
+                    }
+                })
+                .setNegativeButton("अभी नहीं", null)
+                .show();
+    }
+
+    /** नीचे का VIP बार (YouTube के नीचे वाले बटनों की जगह) */
     private boolean vipCardShown() {
         return vipCard != null && mode == MODE_NONE && ytWeb != null && ytWeb == homeWeb
                 && !onShorts && !ytLocked && !fsOn;
@@ -723,7 +811,11 @@ public class MainActivity extends Activity {
         if (vipCard == null) return;
         vipCard.setVisibility(vipCardShown() ? View.VISIBLE : View.GONE);
         if (vipCardTxt != null) {
-            vipCardTxt.setText(vipLevel <= 0 ? "👑  VIP मेंबर" : "👑  VIP " + vipLevel + " / " + VIP_MAX);
+            vipCardTxt.setText(vipLevel <= 0 ? "👑  VIP पाएँ" : "👑  VIP " + vipLevel);
+            vipCardTxt.setTextColor(vipLevel <= 0 ? 0xFF222222 : 0xFF1B8F3A);
+        }
+        if (vipCardGo != null) {
+            vipCardGo.setText(vipLevel > 0 && vipPicksLeft() > 0 ? "फीचर चुनें  ›" : "VIP बढ़ाएँ  ›");
         }
         applyYtMargin();
     }
@@ -732,28 +824,32 @@ public class MainActivity extends Activity {
         vipCard = new LinearLayout(this);
         vipCard.setOrientation(LinearLayout.HORIZONTAL);
         vipCard.setGravity(Gravity.CENTER_VERTICAL);
-        vipCard.setPadding(dp(14), 0, dp(10), 0);
-        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{0xFF2B2100, 0xFF8A6A0A, 0xFFE0B100});
-        vipCard.setBackground(g);
+        vipCard.setPadding(dp(16), 0, dp(12), 0);
+        GradientDrawable line = new GradientDrawable();
+        line.setColor(0xFFDDDDDD);
+        GradientDrawable white = new GradientDrawable();
+        white.setColor(Color.WHITE);
+        android.graphics.drawable.LayerDrawable ld = new android.graphics.drawable.LayerDrawable(
+                new android.graphics.drawable.Drawable[]{line, white});
+        ld.setLayerInset(1, 0, dp(1), 0, 0);
+        vipCard.setBackground(ld);
         vipCard.setVisibility(View.GONE);
         vipCardTxt = new TextView(this);
-        vipCardTxt.setTextColor(0xFFFFE9A6);
-        vipCardTxt.setTextSize(15);
+        vipCardTxt.setTextColor(0xFF222222);
+        vipCardTxt.setTextSize(16);
         vipCardTxt.setTypeface(Typeface.DEFAULT_BOLD);
         vipCard.addView(vipCardTxt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView go = new TextView(this);
-        go.setText("VIP प्राप्त करें  ›");
-        go.setTextColor(0xFF3A2A00);
-        go.setTextSize(13);
-        go.setTypeface(Typeface.DEFAULT_BOLD);
-        go.setGravity(Gravity.CENTER);
-        go.setPadding(dp(14), 0, dp(14), 0);
+        vipCardGo = new TextView(this);
+        vipCardGo.setTextColor(Color.WHITE);
+        vipCardGo.setTextSize(13);
+        vipCardGo.setTypeface(Typeface.DEFAULT_BOLD);
+        vipCardGo.setGravity(Gravity.CENTER);
+        vipCardGo.setPadding(dp(16), 0, dp(16), 0);
         GradientDrawable gb = new GradientDrawable();
-        gb.setColor(0xFFFFD54F);
+        gb.setColor(0xFF1B8F3A);
         gb.setCornerRadius(dp(18));
-        go.setBackground(gb);
-        vipCard.addView(go, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)));
+        vipCardGo.setBackground(gb);
+        vipCard.addView(vipCardGo, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)));
         vipCard.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -768,9 +864,10 @@ public class MainActivity extends Activity {
     private void showVipPage() {
         if (isFinishing()) return;
         if (vipDialog != null && vipDialog.isShowing()) return;
-        vipDialog = new android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar);
+        vipExpireIfNeeded();
+        vipDialog = new android.app.Dialog(this, android.R.style.Theme_Light_NoTitleBar);
         ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(0xFF121212);
+        sv.setBackgroundColor(Color.WHITE);
         vipBody = new LinearLayout(this);
         vipBody.setOrientation(LinearLayout.VERTICAL);
         vipBody.setPadding(dp(16), dp(20), dp(16), dp(28));
@@ -785,21 +882,50 @@ public class MainActivity extends Activity {
         if (vipDialog != null && vipDialog.isShowing() && vipBody != null) fillVipPage();
     }
 
+    /** चुनने से पहले पक्का करना: एक बार चुना तो बदल नहीं सकते */
+    private void vipPickConfirm(final int f) {
+        if (vipHas(f)) return;
+        if (vipPicksLeft() <= 0) {
+            Toast.makeText(this, "VIP " + vipLevel + " के सारे चुनाव हो चुके, VIP बढ़ाएँ", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new android.app.AlertDialog.Builder(this)
+                .setMessage("\"" + VIP_TITLE[f - 1] + "\" चुनें?\n\nएक बार चुनने के बाद इसे बदल नहीं सकेंगे। "
+                        + "24 घंटे बाद सारे VIP ख़त्म हो जाएँगे।")
+                .setPositiveButton("✔ ठीक है", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        if (vipExpireIfNeeded() || vipPicksLeft() <= 0 || vipHas(f)) return;
+                        vipPicks |= (1 << f);
+                        saveVip();
+                        updateVipCard();
+                        refreshVipPage();
+                        Toast.makeText(MainActivity.this, "✅ " + VIP_TITLE[f - 1] + " चालू हो गया",
+                                Toast.LENGTH_SHORT).show();
+                        if (f == F_WAVE && waveSwitch != null) waveSwitch.setChecked(true);
+                        if (f == F_MUSIC && musicSwitch != null) musicSwitch.setChecked(true);
+                    }
+                })
+                .setNegativeButton("रद्द", null)
+                .show();
+    }
+
     private void fillVipPage() {
         vipBody.removeAllViews();
+        final int green = 0xFF1B8F3A;
         // ऊपर: शीर्षक + बंद
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = new TextView(this);
         title.setText("👑  VIP मेंबर");
-        title.setTextColor(0xFFFFD54F);
+        title.setTextColor(0xFF111111);
         title.setTextSize(24);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         head.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView x = new TextView(this);
         x.setText("✕");
-        x.setTextColor(Color.WHITE);
+        x.setTextColor(0xFF111111);
         x.setTextSize(22);
         x.setGravity(Gravity.CENTER);
         x.setOnClickListener(new View.OnClickListener() {
@@ -812,38 +938,76 @@ public class MainActivity extends Activity {
         vipBody.addView(head);
 
         TextView st = new TextView(this);
-        st.setTextColor(Color.WHITE);
+        st.setTextColor(0xFF333333);
         st.setTextSize(15);
         st.setPadding(0, dp(10), 0, dp(4));
-        st.setText(vipLevel <= 0
-                ? "अभी आप VIP नहीं हैं। एक रिवॉर्डेड वीडियो पूरा देखने पर VIP 1, दो पर VIP 2, ऐसे ही VIP " + VIP_MAX + " तक।"
-                : "आप VIP " + vipLevel + " मेंबर हैं 🎉"
-                + (vipLevel >= VIP_MAX ? "\nसारे फीचर चालू हैं।"
-                : "\nअगला VIP " + (vipLevel + 1) + " पाने के लिए एक और रिवॉर्डेड वीडियो पूरा देखें।"));
+        if (vipLevel <= 0) {
+            st.setText("अभी आप VIP नहीं हैं। एक रिवॉर्डेड वीडियो पूरा देखने पर VIP 1 मिलेगा, "
+                    + "जिसमें नीचे के फीचर में से कोई 1 चुन सकते हैं। VIP 2 पर 2, ऐसे ही VIP "
+                    + VIP_MAX + " तक।");
+        } else {
+            long left = Math.max(0L, VIP_LIFE_MS - (System.currentTimeMillis() - vipStart));
+            long hh = left / 3600000L, mm = (left / 60000L) % 60L;
+            st.setText("आप VIP " + vipLevel + " हैं 🎉\n"
+                    + "बचे चुनाव: " + vipPicksLeft() + " (कुल " + vipLevel + ")\n"
+                    + "⏳ बचा समय: " + hh + " घंटे " + mm + " मिनट, फिर सारे VIP ख़त्म");
+        }
         vipBody.addView(st);
 
         for (int i = 1; i <= VIP_MAX; i++) {
-            boolean on = vipLevel >= i;
+            final int f = i;
+            boolean picked = vipHas(f);
+            boolean canPick = !picked && vipPicksLeft() > 0;
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
             card.setPadding(dp(14), dp(12), dp(14), dp(12));
             GradientDrawable cg = new GradientDrawable();
-            cg.setColor(on ? 0xFF3A2F0B : 0xFF1E1E1E);
+            cg.setColor(picked ? 0xFFE6F6EC : (canPick ? Color.WHITE : 0xFFF2F2F2));
             cg.setCornerRadius(dp(14));
-            cg.setStroke(dp(on ? 2 : 1), on ? 0xFFFFD54F : 0xFF3A3A3A);
+            cg.setStroke(dp(picked ? 2 : 1), picked ? green : (canPick ? 0xFFBBBBBB : 0xFFDDDDDD));
             card.setBackground(cg);
             TextView h = new TextView(this);
-            h.setText((on ? "✅  " : "🔒  ") + "VIP " + i + "  •  " + VIP_TITLE[i - 1]);
-            h.setTextColor(on ? 0xFFFFD54F : Color.WHITE);
+            h.setText((picked ? "✅  " : (canPick ? "" : "🔒  ")) + VIP_TITLE[f - 1]);
+            h.setTextColor(picked ? green : (canPick ? 0xFF111111 : 0xFF888888));
             h.setTextSize(16);
             h.setTypeface(Typeface.DEFAULT_BOLD);
             card.addView(h);
             TextView d = new TextView(this);
-            d.setText(VIP_DESC[i - 1]);
-            d.setTextColor(on ? 0xFFEADFB8 : 0xFFAAAAAA);
+            d.setText(VIP_DESC[f - 1]);
+            d.setTextColor(picked ? 0xFF2E6B45 : (canPick ? 0xFF555555 : 0xFF999999));
             d.setTextSize(13);
             d.setPadding(0, dp(6), 0, 0);
             card.addView(d);
+            if (picked || canPick) {
+                TextView tag = new TextView(this);
+                tag.setText(picked ? "चालू ✔" : "✔  इसे चुनें");
+                tag.setTextColor(picked ? green : Color.WHITE);
+                tag.setTextSize(13);
+                tag.setTypeface(Typeface.DEFAULT_BOLD);
+                tag.setGravity(Gravity.CENTER);
+                GradientDrawable tg = new GradientDrawable();
+                tg.setCornerRadius(dp(16));
+                if (picked) {
+                    tg.setColor(Color.WHITE);
+                    tg.setStroke(dp(1), green);
+                } else {
+                    tg.setColor(green);
+                }
+                tag.setBackground(tg);
+                LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, dp(32));
+                tl.topMargin = dp(10);
+                card.addView(tag, tl);
+                tag.setPadding(dp(16), 0, dp(16), 0);
+            }
+            if (canPick) {
+                card.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        vipPickConfirm(f);
+                    }
+                });
+            }
             LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             cl.topMargin = dp(12);
@@ -851,8 +1015,9 @@ public class MainActivity extends Activity {
         }
 
         TextView note = new TextView(this);
-        note.setText("हर VIP में पिछले सारे VIP के फीचर भी शामिल रहते हैं।");
-        note.setTextColor(0xFF888888);
+        note.setText("एक बार चुना हुआ फीचर बदला नहीं जा सकता। जो फीचर नहीं चुना, वह बंद रहेगा। "
+                + "VIP बढ़ाने पर और फीचर चुन सकते हैं।");
+        note.setTextColor(0xFF777777);
         note.setTextSize(12);
         note.setPadding(0, dp(12), 0, dp(4));
         vipBody.addView(note);
@@ -864,13 +1029,13 @@ public class MainActivity extends Activity {
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dp(26));
         if (vipLevel >= VIP_MAX) {
-            btn.setText("👑 आप VIP " + VIP_MAX + " हैं");
-            btn.setTextColor(Color.WHITE);
-            bg.setColor(0xFF1B8F3A);
+            btn.setText("👑 आप सबसे ऊँचे VIP " + VIP_MAX + " पर हैं");
+            btn.setTextColor(0xFF666666);
+            bg.setColor(0xFFE0E0E0);
         } else {
             btn.setText("🎁  विज्ञापन देखकर VIP " + (vipLevel + 1) + " पाएँ");
-            btn.setTextColor(0xFF3A2A00);
-            bg.setColor(0xFFFFD54F);
+            btn.setTextColor(Color.WHITE);
+            bg.setColor(green);
             btn.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -1397,6 +1562,7 @@ public class MainActivity extends Activity {
         // कमेंट पैनल हटाया (buildComments() अब नहीं बनता)
 
         buildVipCard();
+        root.postDelayed(vipTick, 30000);   // हर 30 सेकंड में 24 घंटे की जाँच
         root.addView(playerLayer, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -1469,10 +1635,6 @@ public class MainActivity extends Activity {
         spinner.removeCallbacks(hideSpinner);
         spinner.postDelayed(hideSpinner, 8000);
         miniPp.setText("❚❚");
-        // म्यूज़िक मोड में मुफ़्त गाने गिनो; सीमा पूरी तो स्विच बंद + रिवॉर्डेड
-        if (musicOn && vipLevel < 2) {
-            if (songCount >= FREE_SONGS) musicGateTrip(); else songCount++;
-        }
         // म्यूज़िक बार / अगला-गाना की तैयारी
         errStreak = 0;
         curTitle = "";
@@ -1881,6 +2043,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         resumedNow = true;
+        vipExpireIfNeeded();
         restoreFromOverlay();     // बाहर की विंडो से वापस ऐप में
         if (orient != null && orient.canDetectOrientation()) orient.enable();
         updateWaveSensor();
@@ -1934,7 +2097,7 @@ public class MainActivity extends Activity {
             if (waveSwitch != null) waveSwitch.setChecked(false);
             return;
         }
-        if (on && !rewardedDone && waveCount >= FREE_WAVES) {
+        if (on && !vipHas(F_WAVE)) {
             if (waveSwitch != null) waveSwitch.setChecked(false);
             showWaveGate();
             return;
@@ -1949,21 +2112,8 @@ public class MainActivity extends Activity {
     private boolean waveAfterReward;
     private android.app.AlertDialog waveDialog;
 
-    /** मुफ़्त बार पूरे: एक विज्ञापन देखने का बटन. पूरा देखते ही स्विच अपने-आप चालू हो जाता है */
     private void showWaveGate() {
-        if (isFinishing() || (waveDialog != null && waveDialog.isShowing())) return;
-        waveDialog = new android.app.AlertDialog.Builder(this)
-                .setMessage("✋ हाथ लहराकर अगला Shorts हमेशा चलाने के लिए VIP 1 चाहिए। "
-                        + "एक रिवॉर्डेड वीडियो पूरा देखिए, VIP 1 मिल जाएगा।")
-                .setPositiveButton("👑 VIP देखें", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        waveAfterReward = true;
-                        showVipPage();
-                    }
-                })
-                .setNegativeButton("अभी नहीं", null)
-                .show();
+        showFeatureGate(F_WAVE);
     }
 
     private void updateWaveSensor() {
@@ -1995,14 +2145,6 @@ public class MainActivity extends Activity {
                 || rewShowing || (loadView != null && loadView.getVisibility() == View.VISIBLE)) return;
         lastWaveMs = now;
         swipeNextShort();
-        if (!rewardedDone) {
-            waveCount++;
-            if (waveCount >= FREE_WAVES) {      // मुफ़्त बार पूरे -> स्विच अपने-आप बंद
-                if (waveSwitch != null) waveSwitch.setChecked(false);
-                setWave(false);
-                showWaveGate();
-            }
-        }
     }
 
     /** उँगली जैसा ऊपर स्वाइप: नीचे से ऊपर की ओर तेज़ खिसकाव -> अगला Shorts */
@@ -2391,7 +2533,7 @@ public class MainActivity extends Activity {
 
     private void setMusic(boolean on) {
         if (on == musicOn) return;
-        if (on && vipLevel < 2 && songCount >= FREE_SONGS) {   // मुफ़्त गाने पूरे
+        if (on && !vipHas(F_MUSIC)) {   // म्यूज़िक मोड VIP में चुना नहीं
             if (musicSwitch != null) musicSwitch.setChecked(false);
             showMusicGate();
             return;
@@ -2672,7 +2814,6 @@ public class MainActivity extends Activity {
     }
 
     private void playId(String id) {
-        if (musicOn && vipLevel < 2) songCount++;
         curId = id;
         markPlayed(id);
         curTitle = "";
@@ -2687,10 +2828,6 @@ public class MainActivity extends Activity {
 
     private void playNext() {
         if (mode == MODE_NONE || pWeb == null) return;
-        if (musicOn && vipLevel < 2 && songCount >= FREE_SONGS) {
-            musicGateTrip();
-            return;
-        }
         String id = pickNext();
         if (id != null) {
             playId(id);
@@ -2774,19 +2911,7 @@ public class MainActivity extends Activity {
     }
 
     private void showMusicGate() {
-        if (isFinishing() || (musicDialog != null && musicDialog.isShowing())) return;
-        musicDialog = new android.app.AlertDialog.Builder(this)
-                .setMessage("🎵 आपके " + FREE_SONGS + " मुफ़्त गाने पूरे हो गए। म्यूज़िक मोड हमेशा चलाने के लिए "
-                        + "VIP 2 चाहिए (अभी VIP " + vipLevel + "), यानी रिवॉर्डेड वीडियो देखें।")
-                .setPositiveButton("👑 VIP देखें", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        musicAfterReward = true;
-                        showVipPage();
-                    }
-                })
-                .setNegativeButton("अभी नहीं", null)
-                .show();
+        showFeatureGate(F_MUSIC);
     }
 
     private void updateMusicService() {
@@ -2938,7 +3063,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean showOverlay() {
-        if (ovShown || musicOn || vipLevel < 4 || mode == MODE_NONE || !vidPlaying || rewShowing
+        if (ovShown || musicOn || !vipHas(F_MINIMIZE) || mode == MODE_NONE || !vidPlaying || rewShowing
                 || customView != null || card == null || !canOverlay()) return false;
         try {
             final WindowManager wm = (WindowManager) getApplicationContext().getSystemService(WINDOW_SERVICE);
@@ -3253,7 +3378,7 @@ public class MainActivity extends Activity {
     }
 
     private void enterPip() {
-        if (Build.VERSION.SDK_INT < 26 || musicOn || vipLevel < 4 || inPip || mode == MODE_NONE || !vidPlaying
+        if (Build.VERSION.SDK_INT < 26 || musicOn || !vipHas(F_MINIMIZE) || inPip || mode == MODE_NONE || !vidPlaying
                 || rewShowing || customView != null) return;
         try {
             enterPictureInPictureMode(pipParams());
@@ -3350,7 +3475,7 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     if (VideoLink.parse(url) == null) return;
-                    if (musicOn || vipLevel < 3 || ytWeb != homeWeb || w < 60 || h < 30) {
+                    if (musicOn || !vipHas(F_INLINE) || ytWeb != homeWeb || w < 60 || h < 30) {
                         openPlayer(url);
                         return;
                     }
@@ -3839,6 +3964,7 @@ public class MainActivity extends Activity {
 
     private void inject(WebView view) {
         view.evaluateJavascript(HOOK, null);
+        view.evaluateJavascript(HIDE_NAV, null);
         view.evaluateJavascript(SPEECH_JS, null);
         view.evaluateJavascript(VIEW_FIX, null);
     }
@@ -4075,6 +4201,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (root != null) root.removeCallbacks(vipTick);
         if (shortsSpare != null) {
             try {
                 shortsSpare.destroy();
