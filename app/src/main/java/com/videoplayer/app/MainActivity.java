@@ -29,6 +29,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Outline;
+import android.graphics.PixelFormat;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -123,6 +124,11 @@ public class MainActivity extends Activity {
             + "if(window.__vpHooked)return;window.__vpHooked=true;"
             + "try{var mm=window.matchMedia;window.matchMedia=function(q){if(/prefers-color-scheme/.test(q)){return {matches:/light/.test(q),media:q,onchange:null,addListener:function(){},removeListener:function(){},addEventListener:function(){},removeEventListener:function(){},dispatchEvent:function(){return false}};}return mm.call(window,q);};}catch(x){}"
             + "try{var de=document.documentElement;var fix=function(){if(de.hasAttribute('dark'))de.removeAttribute('dark');};fix();new MutationObserver(fix).observe(de,{attributes:true,attributeFilter:['dark']});}catch(x){}"
+            + "var vpFind=function(a){var el=a,i=0;while(el&&i<7){var c=el.querySelectorAll('img,[class*=thumbnail],[class*=Thumbnail]'),best=null,bw=0;for(var k=0;k<c.length;k++){var r=c[k].getBoundingClientRect(),ar=r.width/(r.height||1);if(r.width>120&&ar>1.55&&ar<2.05&&r.width>bw){best=c[k];bw=r.width;}}if(best)return best;el=el.parentElement;i++;}return null;};"
+            + "var vpRaf=0;var vpRep=function(){vpRaf=0;var el=window.__vpPinEl;if(!el)return;if(!el.isConnected){window.__vpPinEl=null;try{VideoBridge.pinLost();}catch(x){}return;}var r=el.getBoundingClientRect();try{VideoBridge.pin(r.left,r.top,r.width,r.height);}catch(x){}};"
+            + "var vpSch=function(){if(window.__vpPinEl&&!vpRaf)vpRaf=requestAnimationFrame(vpRep);};"
+            + "window.addEventListener('scroll',vpSch,true);window.addEventListener('resize',vpSch);"
+            + "window.__vpPinStop=function(){window.__vpPinEl=null;};"
             + "window.addEventListener('click',function(e){"
             + "var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;"
             + "if(!a)return;"
@@ -133,7 +139,9 @@ public class MainActivity extends Activity {
             + "if(!ok)return;"
             + "e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();"
             + "try{var v=document.querySelector('video');if(v)v.pause();}catch(x){}"
-            + "VideoBridge.play(a.href);"
+            + "var te=null;try{te=vpFind(a);}catch(x){}"
+            + "if(te){var rr=te.getBoundingClientRect();window.__vpPinEl=te;VideoBridge.playInline(a.href,rr.left,rr.top,rr.width,rr.height);}"
+            + "else{VideoBridge.play(a.href);}"
             + "},true);"
             + "})();";
 
@@ -851,7 +859,11 @@ public class MainActivity extends Activity {
     // छोटी तैरती विंडो: जहाँ छोड़ो वहीं रहती है
     // ------------------------------------------------------------------
     private void placeMini() {
-        if (card == null || miniBox == null || musicOn) return;
+        if (card == null || miniBox == null || musicOn || ovShown) return;
+        if (inlineOn) {
+            placeInline();
+            return;
+        }
         int rw = root.getWidth() > 0 ? root.getWidth()
                 : getResources().getDisplayMetrics().widthPixels;
         int rh = root.getHeight() > 0 ? root.getHeight()
@@ -1050,6 +1062,10 @@ public class MainActivity extends Activity {
         card.setClipToOutline(true);
 
         pWeb = new BgWebView(this);
+        if (Build.VERSION.SDK_INT >= 26) {
+            // पीछे जाने पर भी प्लेयर का रेंडरर ऊँची प्राथमिकता पर रहे (आवाज़ न कटे)
+            pWeb.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
         pWeb.setBackgroundColor(Color.BLACK);
         card.addView(pWeb, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -1089,6 +1105,7 @@ public class MainActivity extends Activity {
 
             @Override
             public boolean onTouch(View v, MotionEvent e) {
+                if (inlineOn) return inlineTouch(v, e);
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         downX = e.getRawX();
@@ -1257,6 +1274,7 @@ public class MainActivity extends Activity {
 
     private void setMode(int m) {
         if (m != MODE_FULL) closeComments();
+        if (m != MODE_MINI) inlineStop();
         mode = m;
         hideFsNotice();
         if (m == MODE_NONE) {
@@ -1490,6 +1508,7 @@ public class MainActivity extends Activity {
     }
 
     private void applyCardLayout() {
+        if (ovShown) return;      // कार्ड अभी बाहर की तैरती विंडो में है
         FrameLayout.LayoutParams lp;
         if (fsOn || inPip) {
             lp = new FrameLayout.LayoutParams(
@@ -1498,6 +1517,8 @@ public class MainActivity extends Activity {
             // ऑडियो बार के ठीक पीछे (अदृश्य), ताकि वेबव्यू चलता रहे पर टच न ले
             lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(MUSIC_BAR_H),
                     Gravity.BOTTOM | Gravity.LEFT);
+        } else if (mode == MODE_MINI && inlineOn) {
+            lp = new FrameLayout.LayoutParams(inW, inH, Gravity.TOP | Gravity.LEFT);
         } else if (mode == MODE_MINI) {
             lp = new FrameLayout.LayoutParams(dp(MINI_W), dp(MINI_CARD_H), Gravity.TOP | Gravity.LEFT);
         } else if (getResources().getConfiguration().orientation
@@ -1628,6 +1649,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         resumedNow = true;
+        restoreFromOverlay();     // बाहर की विंडो से वापस ऐप में
         if (orient != null && orient.canDetectOrientation()) orient.enable();
         updateWaveSensor();
         if (root != null) {
@@ -2548,6 +2570,333 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------------
+    // थंबनेल पर ही चलना: क्लिक किए वीडियो के थंबनेल के बराबर विंडो, उसी की जगह; स्क्रॉल से साथ चले
+    // और थंबनेल निकल जाए तो वीडियो बंद। विंडो पर टैप -> बड़ा प्लेयर
+    // ------------------------------------------------------------------
+    private boolean inlineOn;
+    private float inX, inY, inViewH;
+    private int inW, inH, inlineSized;
+    private float itDownX, itDownY;
+    private boolean itMoved;
+
+    private void inlineSet(double l, double t, double w, double h) {
+        float d = getResources().getDisplayMetrics().density;
+        int[] a = new int[2], b = new int[2];
+        if (ytWeb != null) ytWeb.getLocationInWindow(a);
+        root.getLocationInWindow(b);
+        inX = a[0] - b[0] + (float) (l * d);
+        inY = a[1] - b[1] + (float) (t * d);
+        inW = Math.round((float) (w * d));
+        inH = Math.round((float) (h * d));
+        inViewH = ytWeb == null ? 0 : ytWeb.getHeight();
+    }
+
+    private void placeInline() {
+        if (!inlineOn || card == null || miniBox == null || ovShown) return;
+        int key = inW * 100000 + inH;
+        if (key != inlineSized) {                       // साइज़ बदला तभी लेआउट छुओ
+            inlineSized = key;
+            card.setLayoutParams(new FrameLayout.LayoutParams(inW, inH, Gravity.TOP | Gravity.LEFT));
+            miniBox.setLayoutParams(new FrameLayout.LayoutParams(inW, inH, Gravity.TOP | Gravity.LEFT));
+        }
+        card.setTranslationX(inX);
+        card.setTranslationY(inY);
+        miniBox.setTranslationX(inX);
+        miniBox.setTranslationY(inY);
+    }
+
+    private void inlineStop() {
+        if (!inlineOn) return;
+        inlineOn = false;
+        inlineSized = 0;
+        try {
+            if (homeWeb != null) homeWeb.evaluateJavascript("window.__vpPinStop&&__vpPinStop()", null);
+        } catch (Throwable ignored) {
+        }
+        if (miniBox != null) {
+            miniBox.setLayoutParams(new FrameLayout.LayoutParams(
+                    dp(MINI_W), dp(MINI_CARD_H), Gravity.TOP | Gravity.LEFT));
+        }
+    }
+
+    /** थंबनेल वाली विंडो पर छुआई: खिसकाना नहीं; ऊपर-नीचे सरकाओ तो पेज स्क्रॉल हो, टैप तो बड़ा प्लेयर */
+    private boolean inlineTouch(View v, MotionEvent e) {
+        int a = e.getActionMasked();
+        if (a == MotionEvent.ACTION_DOWN) {
+            itDownX = e.getRawX();
+            itDownY = e.getRawY();
+            itMoved = false;
+        } else if (!itMoved && a == MotionEvent.ACTION_MOVE) {
+            int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+            if (Math.hypot(e.getRawX() - itDownX, e.getRawY() - itDownY) > slop) itMoved = true;
+        }
+        if (ytWeb == null) {
+            if (a == MotionEvent.ACTION_UP && !itMoved) v.performClick();
+            return true;
+        }
+        int[] loc = new int[2];
+        ytWeb.getLocationOnScreen(loc);
+        MotionEvent c = MotionEvent.obtain(e);
+        c.setLocation(e.getRawX() - loc[0], e.getRawY() - loc[1]);
+        if (a == MotionEvent.ACTION_UP && !itMoved) {
+            c.setAction(MotionEvent.ACTION_CANCEL);     // पेज पर थंबनेल का लिंक दोबारा न चले
+            ytWeb.dispatchTouchEvent(c);
+            c.recycle();
+            v.performClick();
+            return true;
+        }
+        ytWeb.dispatchTouchEvent(c);
+        c.recycle();
+        return true;
+    }
+
+    // ------------------------------------------------------------------
+    // बाहर की अपनी तैरती विंडो (ऐप नीचे करने पर): सिर्फ़ वीडियो + ❚❚ + ✕ + ⤢ (बड़ा/छोटा)
+    // वीडियो पर टैप -> ऐप खुल जाता है; उँगली से कहीं भी खिसका सकते हैं
+    // ------------------------------------------------------------------
+    private boolean ovShown, ovBig;
+    private FrameLayout ovRoot;
+    private TextView ovPp, ovZoom;
+    private WindowManager.LayoutParams ovLp;
+    private int ovIdx;
+
+    private boolean canOverlay() {
+        return Build.VERSION.SDK_INT >= 26 && Settings.canDrawOverlays(this);
+    }
+
+    private int ovWidth() {
+        int sw = getResources().getDisplayMetrics().widthPixels;
+        return ovBig ? (int) (sw * 0.92f) : Math.min((int) (sw * 0.55f), dp(260));
+    }
+
+    private boolean showOverlay() {
+        if (ovShown || musicOn || mode == MODE_NONE || !vidPlaying || rewShowing || customView != null
+                || card == null || !canOverlay()) return false;
+        try {
+            final WindowManager wm = (WindowManager) getApplicationContext().getSystemService(WINDOW_SERVICE);
+            final int sw = getResources().getDisplayMetrics().widthPixels;
+            final int sh = getResources().getDisplayMetrics().heightPixels;
+            ovBig = false;
+            int w = ovWidth(), h = w * 9 / 16;
+
+            ovRoot = new FrameLayout(this);
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(Color.BLACK);
+            bg.setCornerRadius(dp(10));
+            ovRoot.setBackground(bg);
+            ovRoot.setClipToOutline(true);
+            ovRoot.setOutlineProvider(new ViewOutlineProvider() {
+                @Override
+                public void getOutline(View view, Outline o) {
+                    o.setRoundRect(0, 0, view.getWidth(), view.getHeight(), dp(10));
+                }
+            });
+
+            // कार्ड (वेबव्यू) को ऐप की स्क्रीन से निकालकर इस विंडो में लगाओ
+            ovIdx = playerLayer.indexOfChild(card);
+            playerLayer.removeView(card);
+            card.setTranslationX(0f);
+            card.setTranslationY(0f);
+            ovShown = true;
+            corner = dp(10);
+            card.invalidateOutline();
+            ovRoot.addView(card, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            fullBg.setVisibility(View.GONE);
+            miniBox.setVisibility(View.GONE);
+            bannerHolder.setVisibility(View.GONE);
+            if (shortsHolder != null) shortsHolder.setVisibility(View.GONE);
+
+            // टच: खिसकाना और टैप (टैप -> ऐप खुले)
+            View touch = new View(this);
+            final int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+            touch.setOnTouchListener(new View.OnTouchListener() {
+                float dx, dy;
+                int sx, sy;
+                boolean moved;
+
+                @Override
+                public boolean onTouch(View v, MotionEvent e) {
+                    switch (e.getActionMasked()) {
+                        case MotionEvent.ACTION_DOWN:
+                            dx = e.getRawX();
+                            dy = e.getRawY();
+                            sx = ovLp.x;
+                            sy = ovLp.y;
+                            moved = false;
+                            return true;
+                        case MotionEvent.ACTION_MOVE:
+                            float mx = e.getRawX() - dx, my = e.getRawY() - dy;
+                            if (!moved && Math.abs(mx) + Math.abs(my) > slop) moved = true;
+                            if (moved) {
+                                ovLp.x = Math.max(0, Math.min(sw - ovLp.width, (int) (sx + mx)));
+                                ovLp.y = Math.max(0, Math.min(sh - ovLp.height, (int) (sy + my)));
+                                try {
+                                    ((WindowManager) getApplicationContext().getSystemService(WINDOW_SERVICE))
+                                            .updateViewLayout(ovRoot, ovLp);
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                            return true;
+                        case MotionEvent.ACTION_UP:
+                            if (!moved) openAppFromOverlay();
+                            return true;
+                    }
+                    return true;
+                }
+            });
+            ovRoot.addView(touch, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            // ✕ (ऊपर दाएँ)
+            TextView x = barBtn("✕", 14, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    restoreFromOverlay();
+                    stopPlayer();
+                }
+            });
+            x.setBackground(roundBg(0x99000000));
+            FrameLayout.LayoutParams xl = new FrameLayout.LayoutParams(dp(30), dp(30), Gravity.TOP | Gravity.END);
+            xl.setMargins(0, dp(6), dp(6), 0);
+            ovRoot.addView(x, xl);
+
+            // ⏯ (नीचे बाएँ)
+            ovPp = barBtn("❚❚", 13, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (pWeb != null) pWeb.evaluateJavascript("toggle()", null);
+                }
+            });
+            ovPp.setBackground(roundBg(0x99000000));
+            FrameLayout.LayoutParams pl = new FrameLayout.LayoutParams(dp(34), dp(34), Gravity.BOTTOM | Gravity.START);
+            pl.setMargins(dp(6), 0, 0, dp(6));
+            ovRoot.addView(ovPp, pl);
+
+            // ⤢ बड़ा / छोटा (नीचे दाएँ)
+            ovZoom = barBtn("⤢", 15, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    ovBig = !ovBig;
+                    int nw = ovWidth(), nh = nw * 9 / 16;
+                    int sw2 = getResources().getDisplayMetrics().widthPixels;
+                    int sh2 = getResources().getDisplayMetrics().heightPixels;
+                    ovLp.width = nw;
+                    ovLp.height = nh;
+                    ovLp.x = Math.max(0, Math.min(sw2 - nw, ovLp.x));
+                    ovLp.y = Math.max(0, Math.min(sh2 - nh, ovLp.y));
+                    ovZoom.setText(ovBig ? "⤡" : "⤢");
+                    try {
+                        ((WindowManager) getApplicationContext().getSystemService(WINDOW_SERVICE))
+                                .updateViewLayout(ovRoot, ovLp);
+                    } catch (Throwable ignored) {
+                    }
+                    if (pWeb != null) pWeb.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (pWeb != null) pWeb.evaluateJavascript("fitShield()", null);
+                        }
+                    }, 120);
+                }
+            });
+            ovZoom.setBackground(roundBg(0x99000000));
+            FrameLayout.LayoutParams zl = new FrameLayout.LayoutParams(dp(34), dp(34), Gravity.BOTTOM | Gravity.END);
+            zl.setMargins(0, 0, dp(6), dp(6));
+            ovRoot.addView(ovZoom, zl);
+            ovPp.setText(vidPlaying ? "❚❚" : "▶\uFE0E");
+
+            ovLp = new WindowManager.LayoutParams(w, h,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                            | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    PixelFormat.TRANSLUCENT);
+            ovLp.gravity = Gravity.TOP | Gravity.START;
+            ovLp.x = sw - w - dp(12);
+            ovLp.y = sh - h - dp(140);
+            wm.addView(ovRoot, ovLp);
+
+            if (pWeb != null) {
+                pWeb.evaluateJavascript("setMini(true);setPip(true);keepAlive()", null);
+                pWeb.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (pWeb != null) pWeb.evaluateJavascript("fitShield();keepAlive()", null);
+                    }
+                }, 300);
+            }
+            return true;
+        } catch (Throwable t) {
+            restoreFromOverlay();
+            return false;
+        }
+    }
+
+    /** विंडो हटाकर कार्ड को ऐप की स्क्रीन में वापस लगाता है */
+    private void restoreFromOverlay() {
+        if (!ovShown) return;
+        ovShown = false;
+        try {
+            ((WindowManager) getApplicationContext().getSystemService(WINDOW_SERVICE)).removeViewImmediate(ovRoot);
+        } catch (Throwable ignored) {
+        }
+        try {
+            ovRoot.removeView(card);
+        } catch (Throwable ignored) {
+        }
+        playerLayer.addView(card, Math.max(0, Math.min(ovIdx, playerLayer.getChildCount())),
+                new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+        ovRoot = null;
+        ovPp = null;
+        ovZoom = null;
+        corner = (mode == MODE_MINI) ? dp(12) : dp(16);
+        card.invalidateOutline();
+        fullBg.setVisibility(mode == MODE_FULL ? View.VISIBLE : View.GONE);
+        miniBox.setVisibility(mode == MODE_MINI ? View.VISIBLE : View.GONE);
+        applyCardLayout();
+        if (pWeb != null) {
+            pWeb.evaluateJavascript("setPip(false);setMini(" + (mode == MODE_MINI) + ")", null);
+        }
+        updateShortsBanner(false);
+    }
+
+    private void openAppFromOverlay() {
+        restoreFromOverlay();
+        try {
+            startActivity(new Intent(this, MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                            | Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** पहली बार वीडियो चलने पर एक बार: बाहर की तैरती विंडो की अनुमति माँगो */
+    private boolean ovAsked;
+
+    private void askOverlayPermissionOnce() {
+        if (ovAsked || isFinishing() || Build.VERSION.SDK_INT < 26 || canOverlay()) return;
+        ovAsked = true;
+        android.content.SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (sp.getBoolean("ov_asked", false)) return;
+        sp.edit().putBoolean("ov_asked", true).apply();
+        new android.app.AlertDialog.Builder(this)
+                .setMessage("ऐप नीचे करने पर वीडियो की छोटी तैरती विंडो बाकी ऐप्स के ऊपर दिखाने के लिए "
+                        + "\"दूसरी ऐप्स के ऊपर दिखाएँ\" की अनुमति दें")
+                .setPositiveButton("अनुमति दें", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        try {
+                            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:" + getPackageName())));
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                })
+                .setNegativeButton("अभी नहीं", null)
+                .show();
+    }
+
+    // ------------------------------------------------------------------
     // ऐप को नीचे (होम/जेस्चर) करने पर वीडियो छोटी विंडो (Picture-in-Picture) में सब ऐप के ऊपर चलता रहे
     // ------------------------------------------------------------------
     private boolean vidPlaying, inPip, resumedNow;
@@ -2565,7 +2914,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onUserLeaveHint() {
         super.onUserLeaveHint();
-        enterPip();
+        if (showOverlay()) return;     // अपनी तैरती विंडो (अनुमति हो तो)
+        enterPip();                    // वरना सिस्टम की छोटी विंडो
     }
 
     // ------------------------------------------------------------------
@@ -2627,7 +2977,9 @@ public class MainActivity extends Activity {
 
         @Override
         protected void onWindowVisibilityChanged(int visibility) {
-            if (musicOn && mode != MODE_NONE && visibility != View.GONE) visibility = View.VISIBLE;
+            // ऐप नीचे/स्क्रीन बंद होने पर Android खिड़की को GONE बताता है; तब भी (INVISIBLE/GONE दोनों में)
+            // वेबव्यू को "दिखता हुआ" मानो, वरना वीडियो का समय चलता है पर आवाज़ बंद हो जाती है
+            if (musicOn && mode != MODE_NONE && !isFinishing()) visibility = View.VISIBLE;
             super.onWindowVisibilityChanged(visibility);
         }
     }
@@ -2719,6 +3071,53 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     if (mode != MODE_NONE) stopPlayer();
+                }
+            });
+        }
+
+        /** थंबनेल पर क्लिक: वीडियो उसी थंबनेल की जगह, उसी के बराबर चले (CSS px में जगह) */
+        @JavascriptInterface
+        public void playInline(final String url, final double l, final double tp, final double w, final double h) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (VideoLink.parse(url) == null) return;
+                    if (musicOn || ytWeb != homeWeb || w < 60 || h < 30) {
+                        openPlayer(url);
+                        return;
+                    }
+                    inlineSet(l, tp, w, h);
+                    inlineOn = true;
+                    inlineSized = 0;
+                    openPlayer(url);
+                }
+            });
+        }
+
+        /** पेज स्क्रॉल हुआ: थंबनेल की नई जगह */
+        @JavascriptInterface
+        public void pin(final double l, final double tp, final double w, final double h) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (!inlineOn || mode != MODE_MINI) return;
+                    inlineSet(l, tp, w, h);
+                    placeInline();
+                    // थंबनेल ऊपर (या नीचे) स्क्रॉल होकर निकल गया -> वीडियो पूरा बंद
+                    float d = getResources().getDisplayMetrics().density;
+                    float topRel = (float) (tp * d);
+                    if (topRel + inH * 0.6f < 0 || topRel > inViewH - inH * 0.4f) stopPlayer();
+                }
+            });
+        }
+
+        /** पेज बदल गया, थंबनेल रहा ही नहीं */
+        @JavascriptInterface
+        public void pinLost() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (inlineOn && mode == MODE_MINI) stopPlayer();
                 }
             });
         }
@@ -2858,6 +3257,8 @@ public class MainActivity extends Activity {
                     miniPp.setText((s == 1 || s == 3) ? "❚❚" : "▶\uFE0E");
                     if (s == 1) errStreak = 0;
                     if (mbPp != null) mbPp.setText(vidPlaying ? "❚❚" : "▶\uFE0E");
+                    if (ovPp != null) ovPp.setText(vidPlaying ? "❚❚" : "▶\uFE0E");
+                    if (vidPlaying) askOverlayPermissionOnce();
                     pushMusic();
                     if (inPip && Build.VERSION.SDK_INT >= 26) {
                         try {
@@ -3353,6 +3754,13 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (ovShown) {
+            try {
+                ((WindowManager) getApplicationContext().getSystemService(WINDOW_SERVICE)).removeViewImmediate(ovRoot);
+            } catch (Throwable ignored) {
+            }
+            ovShown = false;
+        }
         try {
             if (pipReceiver != null) unregisterReceiver(pipReceiver);
         } catch (Throwable ignored) {
