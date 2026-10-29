@@ -13,6 +13,7 @@ import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.IBinder;
 
 /**
@@ -99,6 +100,14 @@ public class MusicService extends Service {
             }
 
             @Override
+            public void onCustomAction(String action, Bundle extras) {
+                if ("close".equals(action)) {
+                    Controls c = controls;
+                    if (c != null) c.onClose();
+                }
+            }
+
+            @Override
             public void onSeekTo(long pos) {
                 Controls c = controls;
                 if (c != null) c.onSeek(pos);
@@ -154,6 +163,9 @@ public class MusicService extends Service {
                         | PlaybackState.ACTION_STOP | PlaybackState.ACTION_SEEK_TO)
                 .setState(pl ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
                         posMs, pl ? 1f : 0f)
+                // नए Android की मीडिया-कंट्रोल में नोटिफ़िकेशन-बटन की जगह यही बटन दिखते हैं: ✕ बंद
+                .addCustomAction(new PlaybackState.CustomAction.Builder("close", "बंद करें",
+                        android.R.drawable.ic_menu_close_clear_cancel).build())
                 .build());
 
         Intent open = new Intent(this, MainActivity.class)
