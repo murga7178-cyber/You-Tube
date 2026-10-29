@@ -1265,10 +1265,12 @@ public class MainActivity extends Activity {
         pWeb.loadDataWithBaseURL("https://videoplayer.app/", page, "text/html", "utf-8", null);
         // छोटी विंडो खुली हो तो नया वीडियो उसी में चले; वरना बड़ा प्लेयर
         if (mode == MODE_NONE) {
-            // म्यूज़िक मोड ऑन: गाना सीधे नीचे ऑडियो बार में; वरना बड़ा वीडियो प्लेयर
-            setMode((musicOn && MUSIC_OPEN_AS_BAR) ? MODE_MINI : MODE_FULL);
+            // थंबनेल पर क्लिक: उसी जगह छोटी विंडो; म्यूज़िक मोड ऑन: नीचे ऑडियो बार; वरना बड़ा प्लेयर
+            setMode((inlineOn || (musicOn && MUSIC_OPEN_AS_BAR)) ? MODE_MINI : MODE_FULL);
         } else if (mode != MODE_MINI) {
             setMode(MODE_FULL);
+        } else if (inlineOn) {
+            applyCardLayout();      // पहले से छोटी विंडो खुली थी: अब इस थंबनेल की जगह ले आओ
         }
     }
 
