@@ -1067,9 +1067,9 @@ public class MainActivity extends Activity {
     /** एक VIP level का पूरा पन्ना: title + description + चालू/बंद स्विच (ब्राउज़र के लिए स्विच = खोलें) */
     private View buildVipPageView(final int f) {
         final int green = 0xFF1B8F3A;
-        boolean unlocked = vipLevel >= f;
         boolean picked = vipHas(f);
-        boolean canPick = unlocked && !picked && vipPicksLeft() > 0;
+        boolean canPick = !picked && vipPicksLeft() > 0;   // कोई भी क्रम चल सकता है, vipLevel सिर्फ़ कुल चुनाव तय करता है
+        boolean unlocked = picked || canPick;   // सिर्फ़ तब 🔒 जब चुनाव बचे ही न हों
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -1097,15 +1097,12 @@ public class MainActivity extends Activity {
         TextView info = new TextView(this);
         info.setTextSize(12);
         info.setPadding(0, 0, 0, dp(14));
-        if (!unlocked) {
-            info.setTextColor(0xFF999999);
-            info.setText("यह VIP " + f + " पर खुलेगा · अभी आप VIP " + vipLevel + " हैं");
-        } else if (picked) {
+        if (picked) {
             info.setTextColor(green);
             info.setText(f == F_BROWSER ? "चालू है — नीचे का स्विच ऑन करके ब्राउज़र खोलें" : "चालू ✔");
         } else if (canPick) {
             info.setTextColor(0xFF555555);
-            info.setText("नीचे का स्विच ऑन करके इसे चुनें   ·   " + vipPicksLeft() + " चुनाव बचे");
+            info.setText("नीचे का स्विच ऑन करके इसे चुनें   ·   " + vipPicksLeft() + " चुनाव बचे (किसी भी क्रम में चुन सकते हैं)");
         } else {
             info.setTextColor(0xFF999999);
             info.setText("इस VIP के सारे चुनाव हो चुके, VIP बढ़ाएँ");
@@ -1141,7 +1138,7 @@ public class MainActivity extends Activity {
                 if (!bv.isPressed()) return;   // सिर्फ़ असली टैप पर चले, दोबारा-बनने पर नहीं
                 if (!vipHas(f)) {
                     bv.setChecked(false);
-                    if (unlocked) vipPickConfirm(f);
+                    vipPickConfirm(f);   // vipPickConfirm खुद जाँच लेता है कि चुनाव अभी भी बचा है या नहीं
                     return;
                 }
                 if (f == F_WAVE) {
@@ -1176,6 +1173,199 @@ public class MainActivity extends Activity {
         svLp.bottomMargin = dp(2);
         wrap.addView(sv, svLp);
         return wrap;
+    }
+
+    // ------------------------------------------------------------------
+    // ⭐ पसंदीदा (Favorite) गाने/वीडियो — जोड़ें, लिस्ट देखें, चलाएँ, हटाएँ
+    // ------------------------------------------------------------------
+    private org.json.JSONArray loadFavorites() {
+        try {
+            String raw = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_FAVORITES, "[]");
+            return new org.json.JSONArray(raw);
+        } catch (Exception e) {
+            return new org.json.JSONArray();
+        }
+    }
+
+    private void saveFavorites(org.json.JSONArray arr) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_FAVORITES, arr.toString()).apply();
+    }
+
+    private boolean isFavorite(String id) {
+        org.json.JSONArray arr = loadFavorites();
+        for (int i = 0; i < arr.length(); i++) {
+            if (arr.optJSONObject(i) != null && id.equals(arr.optJSONObject(i).optString("id"))) return true;
+        }
+        return false;
+    }
+
+    private void addCurrentToFavorites() {
+        if (curId == null || curId.length() == 0) {
+            Toast.makeText(this, "अभी कोई गाना/वीडियो नहीं चल रहा", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (isFavorite(curId)) {
+            Toast.makeText(this, "यह पहले से पसंदीदा में है", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        org.json.JSONArray arr = loadFavorites();
+        try {
+            org.json.JSONObject o = new org.json.JSONObject();
+            o.put("id", curId);
+            o.put("title", curTitle != null && curTitle.length() > 0 ? curTitle : curId);
+            arr.put(o);
+            saveFavorites(arr);
+            Toast.makeText(this, "⭐ पसंदीदा में जोड़ा गया", Toast.LENGTH_SHORT).show();
+            refreshFavoritesList();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void removeFavorite(String id) {
+        org.json.JSONArray arr = loadFavorites();
+        org.json.JSONArray out = new org.json.JSONArray();
+        for (int i = 0; i < arr.length(); i++) {
+            org.json.JSONObject o = arr.optJSONObject(i);
+            if (o != null && !id.equals(o.optString("id"))) out.put(o);
+        }
+        saveFavorites(out);
+        refreshFavoritesList();
+    }
+
+    private void showFavoritesDialog() {
+        if (isFinishing()) return;
+        if (favDialog == null) {
+            favDialog = new android.app.Dialog(this, android.R.style.Theme_Light_NoTitleBar);
+            LinearLayout outer = new LinearLayout(this);
+            outer.setOrientation(LinearLayout.VERTICAL);
+            outer.setBackgroundColor(Color.WHITE);
+            outer.setPadding(dp(16), dp(20), dp(16), dp(16));
+
+            LinearLayout head = new LinearLayout(this);
+            head.setOrientation(LinearLayout.HORIZONTAL);
+            head.setGravity(Gravity.CENTER_VERTICAL);
+            TextView title = new TextView(this);
+            title.setText("⭐ मेरे पसंदीदा");
+            title.setTextColor(0xFF111111);
+            title.setTextSize(22);
+            title.setTypeface(Typeface.DEFAULT_BOLD);
+            head.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            TextView x = new TextView(this);
+            x.setText("✕");
+            x.setTextColor(0xFF111111);
+            x.setTextSize(20);
+            x.setGravity(Gravity.CENTER);
+            x.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (favDialog != null) favDialog.dismiss();
+                }
+            });
+            head.addView(x, new LinearLayout.LayoutParams(dp(40), dp(40)));
+            outer.addView(head);
+
+            TextView addBtn = new TextView(this);
+            addBtn.setText("➕  अभी चल रहा गाना/वीडियो पसंदीदा में जोड़ें");
+            addBtn.setTextColor(Color.WHITE);
+            addBtn.setTextSize(14);
+            addBtn.setGravity(Gravity.CENTER);
+            addBtn.setPadding(dp(10), dp(12), dp(10), dp(12));
+            GradientDrawable abg = new GradientDrawable();
+            abg.setCornerRadius(dp(10));
+            abg.setColor(0xFF1B8F3A);
+            addBtn.setBackground(abg);
+            addBtn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    addCurrentToFavorites();
+                }
+            });
+            LinearLayout.LayoutParams addLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            addLp.topMargin = dp(12);
+            addLp.bottomMargin = dp(10);
+            outer.addView(addBtn, addLp);
+
+            ScrollView sv = new ScrollView(this);
+            favListBox = new LinearLayout(this);
+            favListBox.setOrientation(LinearLayout.VERTICAL);
+            sv.addView(favListBox, new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            outer.addView(sv, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(320)));
+
+            favDialog.setContentView(outer);
+        }
+        refreshFavoritesList();
+        favDialog.show();
+    }
+
+    private void refreshFavoritesList() {
+        if (favListBox == null) return;
+        favListBox.removeAllViews();
+        org.json.JSONArray arr = loadFavorites();
+        if (arr.length() == 0) {
+            TextView empty = new TextView(this);
+            empty.setText("अभी कोई पसंदीदा गाना/वीडियो नहीं जोड़ा गया है।");
+            empty.setTextColor(0xFF999999);
+            empty.setTextSize(13);
+            empty.setPadding(dp(4), dp(16), dp(4), dp(16));
+            favListBox.addView(empty);
+            return;
+        }
+        for (int i = 0; i < arr.length(); i++) {
+            final org.json.JSONObject o = arr.optJSONObject(i);
+            if (o == null) continue;
+            final String id = o.optString("id");
+            String ftitle = o.optString("title");
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(8), dp(10), dp(8), dp(10));
+            GradientDrawable rb = new GradientDrawable();
+            rb.setColor(0xFFF5F5F5);
+            rb.setCornerRadius(dp(10));
+            row.setBackground(rb);
+
+            TextView t = new TextView(this);
+            t.setText(ftitle);
+            t.setTextColor(0xFF222222);
+            t.setTextSize(13);
+            t.setMaxLines(2);
+            row.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            TextView play = new TextView(this);
+            play.setText("▶");
+            play.setTextColor(0xFF1B8F3A);
+            play.setTextSize(18);
+            play.setPadding(dp(10), 0, dp(10), 0);
+            play.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (favDialog != null) favDialog.dismiss();
+                    openPlayer("https://www.youtube.com/watch?v=" + id);
+                }
+            });
+            row.addView(play);
+
+            TextView del = new TextView(this);
+            del.setText("🗑");
+            del.setTextSize(16);
+            del.setPadding(dp(6), 0, dp(4), 0);
+            del.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    removeFavorite(id);
+                }
+            });
+            row.addView(del);
+
+            LinearLayout.LayoutParams rLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rLp.bottomMargin = dp(8);
+            favListBox.addView(row, rLp);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1720,33 +1910,21 @@ public class MainActivity extends Activity {
         rbLp.rightMargin = dp(6);
         top.addView(rewBtn, rbLp);
 
-        // हाथ लहराओ -> अगला Shorts: चालू/बंद का स्विच
-        LinearLayout waveBox = new LinearLayout(this);
-        waveBox.setOrientation(LinearLayout.HORIZONTAL);
-        waveBox.setGravity(Gravity.CENTER_VERTICAL);
-        TextView waveIcon = new TextView(this);
-        waveIcon.setText("✋");
-        waveIcon.setTextSize(15);
-        waveBox.addView(waveIcon);
-        waveSwitch = new Switch(this);
-        waveSwitch.setChecked(waveOn);
-        int[][] st = new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}};
-        waveSwitch.setThumbTintList(new ColorStateList(st, new int[]{0xFFFFFFFF, 0xFFDDDDDD}));
-        waveSwitch.setTrackTintList(new ColorStateList(st, new int[]{0xFFFF3D3D, 0x66FFFFFF}));
-        waveSwitch.setScaleX(0.8f);
-        waveSwitch.setScaleY(0.8f);
-        waveSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+        // ⭐ पसंदीदा: हाथ-स्विच यहाँ से हटा दिया (अब वह सिर्फ़ VIP पेज से ऑन/ऑफ होता है)
+        TextView favBtn = new TextView(this);
+        favBtn.setText("⭐");
+        favBtn.setTextSize(17);
+        favBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
+        favBtn.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onCheckedChanged(CompoundButton b, boolean on) {
-                setWave(on);
+            public void onClick(View v) {
+                showFavoritesDialog();
             }
         });
-        waveBox.addView(waveSwitch, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         LinearLayout.LayoutParams wbLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         wbLp.rightMargin = dp(2);
-        top.addView(waveBox, wbLp);
+        top.addView(favBtn, wbLp);
 
         // 🎵 म्यूज़िक मोड: वीडियो की जगह थंबनेल, सिर्फ़ गाना बजे (स्क्रीन बंद / ऐप नीचे होने पर भी)
         LinearLayout musicBox = new LinearLayout(this);
@@ -2421,6 +2599,9 @@ public class MainActivity extends Activity {
     // सेंसर के आगे हाथ लहराओ -> Shorts में अगला वीडियो (उँगली से ऊपर स्वाइप जैसा)
     // ------------------------------------------------------------------
     private static final String PREFS = "vp_prefs", PREF_WAVE = "wave_next";
+    private static final String PREF_FAVORITES = "favorites";   // JSON array [{id,title}]
+    private android.app.Dialog favDialog;
+    private LinearLayout favListBox;
     private static final int WAVE_GAP_MS = 1000;   // दो बार लगातार न लगे
     private SensorManager sensorMgr;
     private Sensor proxSensor;
