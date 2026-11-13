@@ -2818,6 +2818,12 @@ public class MainActivity extends Activity {
                 if (view != ytWeb) return;
                 if (request != null && request.isForMainFrame()) {
                     showLoadError(request.getUrl().toString());
+                    // जाँच के लिए: असली error कोड स्क्रीन पर दिखाओ
+                    try {
+                        loadSub.setText("Error " + error.getErrorCode() + ": " + error.getDescription()
+                                + "\n" + request.getUrl());
+                    } catch (Throwable ignored) {
+                    }
                 }
             }
 
