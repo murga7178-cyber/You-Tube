@@ -209,15 +209,9 @@ public class MainActivity extends Activity {
     private boolean adsReady;
     private boolean rewReady, rewLoading, rewShowing;
     // ऐप खोलने पर एक बार रिवॉर्डेड पूरा देख लिया तो true (ऐप बंद करके खोलने पर फिर false)
-    private boolean rewardedDone;      // VIP 1 या उससे ऊपर
-    private int vipLevel;               // 0..VIP_MAX
-    private static final int VIP_MAX = 6;
-    private static final boolean VIP_PERSIST = true;   // true करने पर VIP ऐप बंद होने के बाद भी याद रहे
-    private static final int VIP_CARD_H = 46;           // dp, नीचे का VIP कार्ड
     // ऐप खुलने के बाद कितनी बार फुलस्क्रीन हुआ; FREE_FULLSCREENS बार मुफ़्त, उसके बाद रिवॉर्डेड ज़रूरी
     private static final int FREE_FULLSCREENS = 5;
     private int fsCount;
-    private TextView rewBtn;
     private final ArrayList<AdSlot> adSlots = new ArrayList<AdSlot>();
 
     // फोन आड़ा करने पर अपने-आप फुलस्क्रीन
@@ -563,7 +557,7 @@ public class MainActivity extends Activity {
     // रिवॉर्डेड वीडियो (ऐप खोलने पर सिर्फ़ एक बार) -> उसके बाद फुलस्क्रीन खुलता है
     // ------------------------------------------------------------------
     private void loadRewarded() {
-        if (!adsReady || rewReady || rewLoading || vipLevel >= VIP_MAX) return;
+        if (!adsReady || rewReady || rewLoading) return;
         rewLoading = true;
         try {
             UnityAds.load(REWARDED_PLACEMENT, new IUnityAdsLoadListener() {
@@ -592,24 +586,81 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** फुलस्क्रीन (वर्गाकार) बटन: रिवॉर्डेड देख चुके हों तो सीधे फुलस्क्रीन, वरना नोटिस (वीडियो चलता रहता है) */
+    /** फुलस्क्रीन (वर्गाकार) बटन: अब सबके लिए खुला */
     private void requestFullscreen() {
         if (mode == MODE_NONE || fsOn || rewShowing) return;
-        if (vipHas(F_FULL)) {
-            setFullscreen(true);
-            return;
-        }
-        showFeatureGate(F_FULL);      // कोई फ़्री बार नहीं: VIP में चुना हो तभी फुलस्क्रीन
+        setFullscreen(true);
     }
 
-    /** thenFull = true: पूरा देखने के बाद अपने-आप फुलस्क्रीन; false: सिर्फ़ ऊपर वाले बटन से देखा */
-    private void startRewarded(final boolean thenFull) {
-        if (rewShowing) return;
-        if (vipLevel >= VIP_MAX) {
-            Toast.makeText(this, "👑 आप सबसे ऊँचे VIP " + VIP_MAX + " पर हैं", Toast.LENGTH_SHORT).show();
-            if (thenFull && mode != MODE_NONE && !fsOn) setFullscreen(true);
+    // ------------------------------------------------------------------
+    // नया नियम: पहली बार 1 घंटा फ्री; उसके बाद वीडियो चलाने पर एक विज्ञापन -> 1 दिन फ्री.
+    // कोने के गोल ▶ बटन पर दबाने से भी विज्ञापन चलता है और 1 दिन फ्री हो जाता है.
+    // ------------------------------------------------------------------
+    private static final long FIRST_FREE_MS = 60L * 60L * 1000L;        // पहली बार 1 घंटा
+    private static final long DAY_FREE_MS = 24L * 60L * 60L * 1000L;    // विज्ञापन के बाद 1 दिन
+    private long accessUntil;
+    private boolean gateBypass;           // विज्ञापन चल ही न पाए तो वीडियो रोकें नहीं
+    private Runnable afterAdAction;       // विज्ञापन के बाद जो चलाना है
+    private LinearLayout adBox;
+    private TextView adBtn, adCaption;
+
+    // फीचर नंबर (अब सब चालू हैं)
+    private static final int F_WAVE = 1, F_MUSIC = 2, F_INLINE = 3, F_MINIMIZE = 4, F_FULL = 5, F_BROWSER = 6;
+
+    /** सारे फीचर / स्विच सबके लिए उपलब्ध */
+    private boolean vipHas(int f) {
+        return true;
+    }
+
+    /** पुराने गेट के बुलावे (अब कभी नहीं लगते) */
+    private void showFeatureGate(final int f) {
+    }
+
+    private void loadVip() {
+        android.content.SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        long now = System.currentTimeMillis();
+        if (!sp.contains("access_until")) {          // ऐप पहली बार: 1 घंटा फ्री
+            accessUntil = now + FIRST_FREE_MS;
+            sp.edit().putLong("access_until", accessUntil).putLong("last_seen", now).apply();
+        } else {
+            accessUntil = sp.getLong("access_until", 0L);
+        }
+    }
+
+    private boolean hasAccess() {
+        if (gateBypass) return true;
+        long now = System.currentTimeMillis();
+        android.content.SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        long last = sp.getLong("last_seen", 0L);
+        if (now < last - 5L * 60L * 1000L) return false;      // फ़ोन की घड़ी पीछे की गई
+        if (now - last > 60000L) sp.edit().putLong("last_seen", now).apply();
+        return now < accessUntil;
+    }
+
+    /** फ्री समय बाकी हो तो सीधे चलाओ, वरना पहले विज्ञापन, पूरा देखने पर 1 दिन फ्री और फिर वीडियो */
+    private void withAccess(Runnable action) {
+        if (hasAccess()) {
+            action.run();
             return;
         }
+        afterAdAction = action;
+        startRewarded();
+    }
+
+    private void gatedPlay(final String url) {
+        withAccess(() -> openPlayer(url));
+    }
+
+    private void gatedShorts(final String url) {
+        withAccess(() -> openShortsOverlay(url));
+    }
+
+    private void startRewarded(boolean ignored) {
+        startRewarded();
+    }
+
+    private void startRewarded() {
+        if (rewShowing) return;
         if (!adsReady || !rewReady) {
             Toast.makeText(this, "विज्ञापन तैयार हो रहा है, कुछ सेकंड बाद फिर दबाएँ", Toast.LENGTH_SHORT).show();
             loadRewarded();
@@ -624,7 +675,7 @@ public class MainActivity extends Activity {
                         public void onUnityAdsShowFailure(String placementId,
                                 UnityAds.UnityAdsShowError error, String message) {
                             Log.e("UnityRewarded", "show failed: " + message);
-                            afterRewarded(false, true, thenFull);   // विज्ञापन न चला तो रोकें नहीं
+                            afterRewarded(false, true);   // विज्ञापन न चला तो रोकें नहीं
                         }
 
                         @Override
@@ -638,541 +689,130 @@ public class MainActivity extends Activity {
                         @Override
                         public void onUnityAdsShowComplete(String placementId,
                                 UnityAds.UnityAdsShowCompletionState state) {
-                            // पूरा देखा -> रिवॉर्ड मिला; बीच में छोड़ा -> कुछ नहीं, फिर देखना होगा
-                            boolean done = state == UnityAds.UnityAdsShowCompletionState.COMPLETED;
-                            afterRewarded(done, false, thenFull);
+                            afterRewarded(state == UnityAds.UnityAdsShowCompletionState.COMPLETED, false);
                         }
                     });
         } catch (Throwable t) {
-            afterRewarded(false, true, thenFull);
+            afterRewarded(false, true);
         }
     }
 
-    private void afterRewarded(final boolean done, final boolean failed, final boolean thenFull) {
+    private void afterRewarded(final boolean done, final boolean failed) {
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 rewShowing = false;
-                boolean wasWave = waveAfterReward;
-                waveAfterReward = false;
-                boolean wasMusic = musicAfterReward;
-                musicAfterReward = false;
+                Runnable act = afterAdAction;
+                afterAdAction = null;
+                loadRewarded();
                 if (done) {
-                    vipExpireIfNeeded();
-                    if (vipLevel == 0) vipStart = System.currentTimeMillis();   // 24 घंटे यहीं से गिनें
-                    vipLevel = Math.min(VIP_MAX, vipLevel + 1);
-                    rewardedDone = vipLevel >= 1;
-                    saveVip();
-                    updateRewBtn();
-                    updateVipCard();
-                    refreshVipPage();
-                    Toast.makeText(MainActivity.this, "🎉 VIP " + vipLevel + " मिल गया!\nअब VIP पेज पर कोई एक फीचर चुनें",
-                            Toast.LENGTH_LONG).show();
-                    loadRewarded();                       // अगले VIP के लिए
+                    long now = System.currentTimeMillis();
+                    accessUntil = now + DAY_FREE_MS;
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putLong("access_until", accessUntil).putLong("last_seen", now).apply();
+                    updateAdBtn();
+                    Toast.makeText(MainActivity.this, "🎉 1 दिन फ्री हो गया!", Toast.LENGTH_LONG).show();
+                    if (act != null) act.run();
+                } else if (failed) {
+                    if (act != null) {
+                        gateBypass = true;
+                        try {
+                            act.run();
+                        } finally {
+                            gateBypass = false;
+                        }
+                    }
                 } else {
-                    loadRewarded();                       // अगली बार के लिए
+                    Toast.makeText(MainActivity.this, "पूरा विज्ञापन देखने पर ही 1 दिन फ्री मिलेगा",
+                            Toast.LENGTH_SHORT).show();
                 }
-                if ((done || failed) && thenFull && mode != MODE_NONE && !fsOn) setFullscreen(true);
             }
         });
-    }
-
-    private void updateRewBtn() {
-        if (rewBtn == null) return;
-        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                vipLevel >= 1 ? new int[]{0xFF1B8F3A, 0xFF2ECC71} : new int[]{0xFFB8860B, 0xFFFFD54F});
-        g.setCornerRadius(dp(20));
-        rewBtn.setBackground(g);
-        rewBtn.setTextColor(vipLevel >= 1 ? Color.WHITE : 0xFF3A2A00);
-        rewBtn.setText(vipLevel <= 0 ? "👑  VIP पाएँ" : "👑  VIP " + vipLevel + (vipLevel >= VIP_MAX ? " ✅" : ""));
-    }
-
-    // ------------------------------------------------------------------
-    // VIP: हर रिवॉर्डेड वीडियो पूरा देखने पर अगला VIP (1 से 5), हर VIP पर नया फीचर
-    // ------------------------------------------------------------------
-    private LinearLayout vipCard;
-    private TextView vipCardTxt, vipCardGo;
-    private android.app.Dialog vipDialog;
-    private android.app.AlertDialog featureDialog;
-    // VIP पेज अब स्वाइप करने वाले अलग-अलग पन्नों में: हर VIP का अपना पन्ना, टाइटल/विवरण/स्विच वहीं
-    private androidx.viewpager2.widget.ViewPager2 vipPager;
-    private VipPagerAdapter vipPagerAdapter;
-    private TextView vipPageHint;
-    private LinearLayout vipDots;
-    private TextView[] vipDotViews;
-    private TextView vipRewardBtn;   // "विज्ञापन देखकर अगला VIP पाएँ" — पन्नों के नीचे, सबके लिए साझा
-
-    // फीचर नंबर (VIP पेज में इसी क्रम में दिखते हैं)
-    private static final int F_WAVE = 1, F_MUSIC = 2, F_INLINE = 3, F_MINIMIZE = 4, F_FULL = 5, F_BROWSER = 6;
-    private static final long VIP_LIFE_MS = 24L * 60L * 60L * 1000L;   // 24 घंटे में सारे VIP ख़त्म
-    private int vipPicks;      // चुने हुए फीचर (bit f = फीचर f)
-    private long vipStart;     // पहला VIP मिलने का समय (ms)
-
-    private static final String[] VIP_TITLE = {
-            "✋ हाथ से अगला Shorts",
-            "🎵 म्यूज़िक मोड",
-            "▶️ पेज पर ही वीडियो देखें",
-            "🪟 मिनिमाइज करके चलाएँ",
-            "⛶ फुल स्क्रीन",
-            "🌐 वेब ब्राउज़र"
-    };
-    private static final String[] VIP_DESC = {
-            "हाथ लहराकर (फ़ोन के सेंसर के ऊपर) अगला Shorts चलाएँ, उँगली से स्वाइप की ज़रूरत नहीं।",
-            "म्यूज़िक स्विच चालू करें: वीडियो की जगह थंबनेल दिखेगा और सिर्फ़ गाना बजेगा। स्क्रीन बंद या ऐप नीचे होने पर भी चलता रहेगा।",
-            "YouTube पेज पर जिस वीडियो पर क्लिक करें, वह वहीं उसी थंबनेल पर चलेगा। वहीं पर नीचे की पट्टी से वीडियो आगे-पीछे (स्क्रॉल) भी कर सकते हैं।",
-            "ऐप को मिनिमाइज करके वीडियो अपनी होम स्क्रीन और दूसरी ऐप्स के ऊपर छोटी विंडो में चलाएँ। उसे खिसकाएँ, बड़ा-छोटा करें, रोकें या बंद करें।",
-            "वीडियो को पूरी स्क्रीन में आड़ा करके (फुल स्क्रीन) देखें।",
-            "ऐप के अंदर ही वेब ब्राउज़र खोलें — कोई भी वेबसाइट खोजें या URL डालकर देखें, वीडियो देखते हुए बाहर जाने की ज़रूरत नहीं।"
-    };
-
-    private String vipShort(int lv) {
-        return (lv >= 1 && lv <= VIP_MAX) ? VIP_TITLE[lv - 1] : "";
-    }
-
-    /** यह फीचर इस VIP में चुना हुआ है? (24 घंटे पूरे हो गए हों तो पहले सब ख़त्म) */
-    private boolean vipHas(int f) {
-        vipExpireIfNeeded();
-        return vipLevel > 0 && (vipPicks & (1 << f)) != 0;
-    }
-
-    private int vipPicksLeft() {
-        return Math.max(0, vipLevel - Integer.bitCount(vipPicks));
-    }
-
-    private void saveVip() {
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putInt("vip_level", vipLevel)
-                .putInt("vip_picks", vipPicks)
-                .putLong("vip_start", vipStart)
-                .apply();
-    }
-
-    private void loadVip() {
-        android.content.SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
-        vipLevel = Math.max(0, Math.min(VIP_MAX, sp.getInt("vip_level", 0)));
-        vipPicks = sp.getInt("vip_picks", 0);
-        vipStart = sp.getLong("vip_start", 0L);
-        rewardedDone = vipLevel >= 1;
-        vipExpireIfNeeded();
-    }
-
-    /** 24 घंटे पूरे (या फ़ोन की घड़ी पीछे की गई) -> सारे VIP और चुने फीचर ख़त्म. true = अभी ख़त्म हुए */
-    private boolean vipExpireIfNeeded() {
-        if (vipLevel <= 0 && vipPicks == 0) return false;
-        long age = System.currentTimeMillis() - vipStart;
-        if (vipStart > 0 && age >= 0 && age < VIP_LIFE_MS) return false;
-        vipLevel = 0;
-        vipPicks = 0;
-        vipStart = 0;
-        rewardedDone = false;
-        saveVip();
-        onVipEnded();
-        return true;
-    }
-
-    private void onVipEnded() {
-        if (root == null) return;       // ऐप अभी बन ही रही है
-        if (waveSwitch != null && waveSwitch.isChecked()) waveSwitch.setChecked(false);
-        if (musicSwitch != null && musicSwitch.isChecked()) musicSwitch.setChecked(false);
-        updateRewBtn();
-        updateVipCard();
-        refreshVipPage();
-        Toast.makeText(this, "⏰ 24 घंटे पूरे हुए, सारे VIP ख़त्म हो गए", Toast.LENGTH_LONG).show();
     }
 
     private final Runnable vipTick = new Runnable() {
         @Override
         public void run() {
-            vipExpireIfNeeded();
+            updateAdBtn();
             if (root != null) root.postDelayed(this, 30000);
         }
     };
 
-    /** फीचर इस्तेमाल करने की कोशिश पर, अगर VIP में चुना नहीं है */
-    private void showFeatureGate(final int f) {
-        if (isFinishing() || (featureDialog != null && featureDialog.isShowing())) return;
-        String why;
-        if (vipLevel <= 0) {
-            why = "अभी आप VIP नहीं हैं। एक रिवॉर्डेड वीडियो पूरा देखकर VIP 1 पाएँ, फिर यह फीचर चुनें।";
-        } else if (vipPicksLeft() > 0) {
-            why = "आपके पास " + vipPicksLeft() + " चुनाव बचा है। VIP पेज पर जाकर इसे चुनें।";
-        } else {
-            why = "आपके VIP " + vipLevel + " के सारे चुनाव इस्तेमाल हो चुके हैं। यह फीचर चाहिए तो VIP बढ़ाएँ।";
+    /** कोने का गोल ▶ बटन: हरा = फ्री समय बाकी, सुनहरा = विज्ञापन देखकर 1 दिन फ्री पाएँ */
+    private void updateAdBtn() {
+        if (adBtn == null) return;
+        boolean free = System.currentTimeMillis() < accessUntil;
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.OVAL);
+        g.setColor(free ? 0xFF1B8F3A : 0xFFE0A100);
+        adBtn.setBackground(g);
+        if (adCaption != null) {
+            if (free) {
+                long rem = accessUntil - System.currentTimeMillis();
+                adCaption.setText(rem >= 3600000L ? (rem / 3600000L) + " घं फ्री"
+                        : Math.max(1L, rem / 60000L) + " मि फ्री");
+                adCaption.setVisibility(View.VISIBLE);
+            } else {
+                adCaption.setVisibility(View.GONE);
+            }
         }
-        featureDialog = new android.app.AlertDialog.Builder(this)
-                .setMessage(VIP_TITLE[f - 1] + " चलाने के लिए इसे VIP में चुनना होगा।\n\n" + why)
-                .setPositiveButton("👑 VIP देखें", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        showVipPage(f);   // सीधे इसी फीचर के VIP पन्ने पर
-                    }
-                })
-                .setNegativeButton("अभी नहीं", null)
-                .show();
-    }
-
-    /** नीचे का VIP बार (YouTube के नीचे वाले बटनों की जगह) */
-    private boolean vipCardShown() {
-        return vipCard != null && mode == MODE_NONE && ytWeb != null && ytWeb == homeWeb
-                && !onShorts && !ytLocked && !fsOn;
     }
 
     private void updateVipCard() {
-        if (vipCard == null) return;
-        vipCard.setVisibility(vipCardShown() ? View.VISIBLE : View.GONE);
-        if (vipCardTxt != null) {
-            vipCardTxt.setText(vipLevel <= 0 ? "👑  VIP पाएँ" : "👑  VIP " + vipLevel);
-            vipCardTxt.setTextColor(vipLevel <= 0 ? 0xFF222222 : 0xFF1B8F3A);
+        if (adBox == null) return;
+        boolean show = ytWeb != null && ytWeb == homeWeb && mode != MODE_FULL && !fsOn
+                && !ytLocked && !onShorts;
+        adBox.setVisibility(show ? View.VISIBLE : View.GONE);
+        ViewGroup.LayoutParams lp = adBox.getLayoutParams();
+        if (lp instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams fl = (FrameLayout.LayoutParams) lp;
+            int bm = dp(16) + ((mode == MODE_MINI && musicOn) ? dp(MUSIC_BAR_H) : 0);
+            if (fl.bottomMargin != bm) {
+                fl.bottomMargin = bm;
+                adBox.setLayoutParams(fl);
+            }
         }
-        if (vipCardGo != null) {
-            vipCardGo.setText(vipLevel > 0 && vipPicksLeft() > 0 ? "फीचर चुनें  ›" : "VIP बढ़ाएँ  ›");
-        }
+        updateAdBtn();
         applyYtMargin();
     }
 
     private void buildVipCard() {
-        vipCard = new LinearLayout(this);
-        vipCard.setOrientation(LinearLayout.HORIZONTAL);
-        vipCard.setGravity(Gravity.CENTER_VERTICAL);
-        vipCard.setPadding(dp(16), 0, dp(12), 0);
-        GradientDrawable line = new GradientDrawable();
-        line.setColor(0xFFDDDDDD);
-        GradientDrawable white = new GradientDrawable();
-        white.setColor(Color.WHITE);
-        android.graphics.drawable.LayerDrawable ld = new android.graphics.drawable.LayerDrawable(
-                new android.graphics.drawable.Drawable[]{line, white});
-        ld.setLayerInset(1, 0, dp(1), 0, 0);
-        vipCard.setBackground(ld);
-        vipCard.setVisibility(View.GONE);
-        vipCardTxt = new TextView(this);
-        vipCardTxt.setTextColor(0xFF222222);
-        vipCardTxt.setTextSize(16);
-        vipCardTxt.setTypeface(Typeface.DEFAULT_BOLD);
-        vipCard.addView(vipCardTxt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        vipCardGo = new TextView(this);
-        vipCardGo.setTextColor(Color.WHITE);
-        vipCardGo.setTextSize(13);
-        vipCardGo.setTypeface(Typeface.DEFAULT_BOLD);
-        vipCardGo.setGravity(Gravity.CENTER);
-        vipCardGo.setPadding(dp(16), 0, dp(16), 0);
-        GradientDrawable gb = new GradientDrawable();
-        gb.setColor(0xFF1B8F3A);
-        gb.setCornerRadius(dp(18));
-        vipCardGo.setBackground(gb);
-        vipCard.addView(vipCardGo, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)));
-        vipCard.setOnClickListener(new View.OnClickListener() {
+        adBox = new LinearLayout(this);
+        adBox.setOrientation(LinearLayout.VERTICAL);
+        adBox.setGravity(Gravity.CENTER_HORIZONTAL);
+        adBox.setVisibility(View.GONE);
+        adBtn = new TextView(this);
+        adBtn.setText("▶");
+        adBtn.setTextColor(Color.WHITE);
+        adBtn.setTextSize(18);
+        adBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        adBtn.setGravity(Gravity.CENTER);
+        adBtn.setElevation(dp(6));
+        adBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                showVipPage();
+                startRewarded();   // हमेशा विज्ञापन चलता है; पूरा देखने पर 1 दिन फ्री
             }
         });
-        root.addView(vipCard, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(VIP_CARD_H), Gravity.BOTTOM));
+        adBox.addView(adBtn, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        adCaption = new TextView(this);
+        adCaption.setTextSize(10);
+        adCaption.setTextColor(0xFF1B8F3A);
+        adCaption.setTypeface(Typeface.DEFAULT_BOLD);
+        adCaption.setGravity(Gravity.CENTER);
+        adCaption.setPadding(dp(6), dp(1), dp(6), dp(1));
+        adCaption.setBackground(roundBg(0xE6FFFFFF));
+        adCaption.setVisibility(View.GONE);
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cp.topMargin = dp(3);
+        adBox.addView(adCaption, cp);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.RIGHT);
+        lp.setMargins(0, 0, dp(12), dp(16));
+        root.addView(adBox, lp);
         updateVipCard();
-    }
-
-    private void showVipPage() {
-        showVipPage(0);
-    }
-
-    /** jumpToLevel: 1..VIP_MAX हो तो सीधे उसी VIP के पन्ने पर खुले/जाए; 0 हो तो मौजूदा VIP के पन्ने पर */
-    private void showVipPage(int jumpToLevel) {
-        if (isFinishing()) return;
-        vipExpireIfNeeded();
-        if (vipDialog != null && vipDialog.isShowing()) {
-            if (jumpToLevel >= 1 && jumpToLevel <= VIP_MAX && vipPager != null) {
-                vipPager.setCurrentItem(jumpToLevel - 1, true);
-            }
-            return;
-        }
-        vipDialog = new android.app.Dialog(this, android.R.style.Theme_Light_NoTitleBar);
-        LinearLayout outer = new LinearLayout(this);
-        outer.setOrientation(LinearLayout.VERTICAL);
-        outer.setBackgroundColor(Color.WHITE);
-        outer.setPadding(dp(16), dp(20), dp(16), dp(16));
-
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = new TextView(this);
-        title.setText("👑  VIP मेंबर");
-        title.setTextColor(0xFF111111);
-        title.setTextSize(24);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        head.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView x = new TextView(this);
-        x.setText("✕");
-        x.setTextColor(0xFF111111);
-        x.setTextSize(22);
-        x.setGravity(Gravity.CENTER);
-        x.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (vipDialog != null) vipDialog.dismiss();
-            }
-        });
-        head.addView(x, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        outer.addView(head);
-
-        vipPageHint = new TextView(this);
-        vipPageHint.setTextColor(0xFF333333);
-        vipPageHint.setTextSize(15);
-        vipPageHint.setPadding(0, dp(10), 0, dp(10));
-        outer.addView(vipPageHint);
-
-        vipPagerAdapter = new VipPagerAdapter();
-        vipPager = new androidx.viewpager2.widget.ViewPager2(this);
-        vipPager.setAdapter(vipPagerAdapter);
-        outer.addView(vipPager, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(240)));
-
-        vipDots = new LinearLayout(this);
-        vipDots.setOrientation(LinearLayout.HORIZONTAL);
-        vipDots.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams dotsLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        dotsLp.topMargin = dp(8);
-        outer.addView(vipDots, dotsLp);
-        vipDotViews = new TextView[VIP_MAX];
-        for (int i = 0; i < VIP_MAX; i++) {
-            TextView dot = new TextView(this);
-            dot.setText("●");
-            dot.setTextSize(12);
-            dot.setPadding(dp(3), 0, dp(3), 0);
-            vipDotViews[i] = dot;
-            vipDots.addView(dot);
-        }
-
-        TextView swipeHint = new TextView(this);
-        swipeHint.setText("‹   स्वाइप करके अगला VIP देखें   ›");
-        swipeHint.setTextColor(0xFF999999);
-        swipeHint.setTextSize(11);
-        swipeHint.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams shLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        shLp.topMargin = dp(4);
-        outer.addView(swipeHint, shLp);
-
-        vipRewardBtn = new TextView(this);
-        vipRewardBtn.setGravity(Gravity.CENTER);
-        vipRewardBtn.setTextSize(16);
-        vipRewardBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        vipRewardBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (vipLevel < VIP_MAX) startRewarded(false);
-            }
-        });
-        LinearLayout.LayoutParams rbLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
-        rbLp.topMargin = dp(14);
-        outer.addView(vipRewardBtn, rbLp);
-        updateVipRewardBtn();
-
-        vipPager.registerOnPageChangeCallback(new androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback() {
-            @Override
-            public void onPageSelected(int position) {
-                updateVipDots(position);
-            }
-        });
-
-        vipDialog.setContentView(outer);
-        updateVipPageHint();
-
-        int start;
-        if (jumpToLevel >= 1 && jumpToLevel <= VIP_MAX) start = jumpToLevel - 1;
-        else start = vipLevel <= 0 ? 0 : Math.min(vipLevel, VIP_MAX) - 1;
-        updateVipDots(start);
-        vipDialog.show();
-        vipPager.setCurrentItem(start, false);
-    }
-
-    private void updateVipPageHint() {
-        if (vipPageHint == null) return;
-        String note = "\nएक बार चुना हुआ फीचर बदला नहीं जा सकता। 24 घंटे बाद सारे VIP ख़त्म हो जाएँगे।";
-        if (vipLevel <= 0) {
-            vipPageHint.setText("अभी आप VIP नहीं हैं। एक रिवॉर्डेड वीडियो पूरा देखने पर VIP 1 मिलेगा, जिसमें नीचे के फीचर में से कोई 1 चुन सकते हैं। VIP 2 पर 2, ऐसे ही VIP "
-                    + VIP_MAX + " तक।" + note);
-        } else {
-            long left = Math.max(0L, VIP_LIFE_MS - (System.currentTimeMillis() - vipStart));
-            long hh = left / 3600000L, mm = (left / 60000L) % 60L;
-            vipPageHint.setText("आप VIP " + vipLevel + " हैं 🎉   ·   बचे चुनाव: " + vipPicksLeft()
-                    + "   ·   ⏳ " + hh + "घं " + mm + "मि बाद सारे VIP ख़त्म" + note);
-        }
-    }
-
-    private void updateVipDots(int active) {
-        if (vipDotViews == null) return;
-        for (int i = 0; i < vipDotViews.length; i++) {
-            boolean unlocked = vipLevel >= (i + 1);
-            vipDotViews[i].setTextColor(i == active ? 0xFF1B8F3A : (unlocked ? 0xFFBBBBBB : 0xFFDDDDDD));
-        }
-    }
-
-    private void refreshVipPage() {
-        if (vipDialog == null || !vipDialog.isShowing()) return;
-        updateVipPageHint();
-        updateVipRewardBtn();
-        if (vipPagerAdapter != null) vipPagerAdapter.notifyDataSetChanged();
-        if (vipPager != null) updateVipDots(vipPager.getCurrentItem());
-    }
-
-    private void updateVipRewardBtn() {
-        if (vipRewardBtn == null) return;
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dp(26));
-        if (vipLevel >= VIP_MAX) {
-            vipRewardBtn.setText("👑 आप सबसे ऊँचे VIP " + VIP_MAX + " पर हैं");
-            vipRewardBtn.setTextColor(0xFF666666);
-            bg.setColor(0xFFE0E0E0);
-        } else {
-            vipRewardBtn.setText("🎁  विज्ञापन देखकर VIP " + (vipLevel + 1) + " पाएँ");
-            vipRewardBtn.setTextColor(Color.WHITE);
-            bg.setColor(0xFF1B8F3A);
-        }
-        vipRewardBtn.setBackground(bg);
-    }
-
-    /** हर VIP level का अपना स्वाइप करने वाला पन्ना (ViewPager2 का adapter) */
-    private class VipPagerAdapter extends androidx.recyclerview.widget.RecyclerView.Adapter<VipPagerAdapter.VH> {
-        class VH extends androidx.recyclerview.widget.RecyclerView.ViewHolder {
-            FrameLayout box;
-            VH(FrameLayout v) {
-                super(v);
-                box = v;
-            }
-        }
-
-        @Override
-        public VH onCreateViewHolder(ViewGroup parent, int viewType) {
-            FrameLayout box = new FrameLayout(MainActivity.this);
-            box.setLayoutParams(new androidx.recyclerview.widget.RecyclerView.LayoutParams(
-                    androidx.recyclerview.widget.RecyclerView.LayoutParams.MATCH_PARENT,
-                    androidx.recyclerview.widget.RecyclerView.LayoutParams.MATCH_PARENT));
-            return new VH(box);
-        }
-
-        @Override
-        public void onBindViewHolder(VH h, int position) {
-            h.box.removeAllViews();
-            h.box.addView(buildVipPageView(position + 1));
-        }
-
-        @Override
-        public int getItemCount() {
-            return VIP_MAX;
-        }
-    }
-
-    /** एक VIP level का पूरा पन्ना: title + description + चालू/बंद स्विच (ब्राउज़र के लिए स्विच = खोलें) */
-    private View buildVipPageView(final int f) {
-        final int green = 0xFF1B8F3A;
-        boolean picked = vipHas(f);
-        boolean canPick = !picked && vipPicksLeft() > 0;   // कोई भी क्रम चल सकता है, vipLevel सिर्फ़ कुल चुनाव तय करता है
-        boolean unlocked = picked || canPick;   // सिर्फ़ तब 🔒 जब चुनाव बचे ही न हों
-
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(14), dp(14), dp(14), dp(14));
-        GradientDrawable cg = new GradientDrawable();
-        cg.setColor(picked ? 0xFFE6F6EC : (canPick ? Color.WHITE : 0xFFF2F2F2));
-        cg.setCornerRadius(dp(14));
-        cg.setStroke(dp(picked ? 2 : 1), picked ? green : (canPick ? 0xFFBBBBBB : 0xFFDDDDDD));
-        card.setBackground(cg);
-
-        TextView h = new TextView(this);
-        h.setText("VIP " + f + "   " + (picked ? "✅ " : (unlocked ? "" : "🔒 ")) + VIP_TITLE[f - 1]);
-        h.setTextColor(picked ? green : (canPick ? 0xFF111111 : 0xFF888888));
-        h.setTextSize(18);
-        h.setTypeface(Typeface.DEFAULT_BOLD);
-        card.addView(h);
-
-        TextView d = new TextView(this);
-        d.setText(VIP_DESC[f - 1]);
-        d.setTextColor(picked ? 0xFF2E6B45 : (canPick ? 0xFF555555 : 0xFF999999));
-        d.setTextSize(14);
-        d.setPadding(0, dp(8), 0, dp(10));
-        card.addView(d);
-
-        TextView info = new TextView(this);
-        info.setTextSize(12);
-        info.setPadding(0, 0, 0, dp(14));
-        if (picked) {
-            info.setTextColor(green);
-            info.setText(f == F_BROWSER ? "चालू है — नीचे का स्विच ऑन करके ब्राउज़र खोलें" : "चालू ✔");
-        } else if (canPick) {
-            info.setTextColor(0xFF555555);
-            info.setText("नीचे का स्विच ऑन करके इसे चुनें   ·   " + vipPicksLeft() + " चुनाव बचे (किसी भी क्रम में चुन सकते हैं)");
-        } else {
-            info.setTextColor(0xFF999999);
-            info.setText("इस VIP के सारे चुनाव हो चुके, VIP बढ़ाएँ");
-        }
-        card.addView(info);
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        TextView swLabel = new TextView(this);
-        swLabel.setText(f == F_BROWSER ? "🌐  ब्राउज़र खोलें" : "✔  चालू रखें");
-        swLabel.setTextColor(0xFF333333);
-        swLabel.setTextSize(14);
-        swLabel.setTypeface(Typeface.DEFAULT_BOLD);
-        row.addView(swLabel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        final Switch sw = new Switch(this);
-        int[][] sst = new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}};
-        sw.setThumbTintList(new ColorStateList(sst, new int[]{0xFFFFFFFF, 0xFFDDDDDD}));
-        sw.setTrackTintList(new ColorStateList(sst, new int[]{green, 0x66CCCCCC}));
-        sw.setScaleX(0.85f);
-        sw.setScaleY(0.85f);
-        boolean swOn;
-        if (f == F_WAVE) swOn = picked && waveOn;
-        else if (f == F_MUSIC) swOn = picked && musicOn;
-        else if (f == F_BROWSER) swOn = false;   // यह स्विच सिर्फ़ ब्राउज़र खोलने के लिए है, स्थायी हालत नहीं
-        else swOn = picked;
-        sw.setChecked(swOn);
-        sw.setEnabled(canPick || picked);
-        sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton bv, boolean isOn) {
-                if (!bv.isPressed()) return;   // सिर्फ़ असली टैप पर चले, दोबारा-बनने पर नहीं
-                if (!vipHas(f)) {
-                    bv.setChecked(false);
-                    vipPickConfirm(f);   // vipPickConfirm खुद जाँच लेता है कि चुनाव अभी भी बचा है या नहीं
-                    return;
-                }
-                if (f == F_WAVE) {
-                    setWave(isOn);
-                    refreshVipPage();
-                } else if (f == F_MUSIC) {
-                    setMusic(isOn);
-                    refreshVipPage();
-                } else if (f == F_BROWSER) {
-                    if (isOn) {
-                        bv.setChecked(false);
-                        openBrowserScreen();
-                    }
-                } else {
-                    bv.setChecked(true);   // एक बार चुनने पर यह फीचर हमेशा चालू रहता है
-                }
-            }
-        });
-        row.addView(sw, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        card.addView(row);
-
-        ScrollView sv = new ScrollView(this);
-        sv.addView(card, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        FrameLayout wrap = new FrameLayout(this);
-        FrameLayout.LayoutParams svLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        svLp.leftMargin = dp(2);
-        svLp.rightMargin = dp(2);
-        svLp.topMargin = dp(2);
-        svLp.bottomMargin = dp(2);
-        wrap.addView(sv, svLp);
-        return wrap;
     }
 
     // ------------------------------------------------------------------
@@ -1368,241 +1008,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ------------------------------------------------------------------
-    // 🌐 VIP 6 — ऐप के अंदर वेब ब्राउज़र (Party Room वाले browser से लिया गया डिज़ाइन, यहाँ native WebView से)
-    // ------------------------------------------------------------------
-    private static final String BROWSER_HOME = "https://www.google.com/webhp?igu=1";
-    private android.app.Dialog browserDialog;
-    private WebView browserWeb;
-    private android.widget.EditText browserUrlInput;
-    private TextView browserBackBtn, browserFwdBtn;
-
-    private void openBrowserScreen() {
-        if (!vipHas(F_BROWSER)) {
-            showFeatureGate(F_BROWSER);
-            return;
-        }
-        if (vipDialog != null && vipDialog.isShowing()) vipDialog.dismiss();
-        buildBrowserDialogIfNeeded();
-        browserDialog.show();
-    }
-
-    private String browserProcessInput(String input) {
-        if (input == null) return BROWSER_HOME;
-        String t = input.trim();
-        if (t.isEmpty()) return BROWSER_HOME;
-        if (t.matches("^[a-zA-Z]+://.*")) return t;
-        if (!t.contains(" ") && t.matches("^(www\\.)?[\\w-]+\\.[a-zA-Z]{2,}(/.*)?$")) return "https://" + t;
-        try {
-            return "https://www.google.com/search?q=" + java.net.URLEncoder.encode(t, "UTF-8");
-        } catch (Exception e) {
-            return "https://www.google.com/search?q=" + t;
-        }
-    }
-
-    private void browserGo() {
-        if (browserWeb == null || browserUrlInput == null) return;
-        browserWeb.loadUrl(browserProcessInput(browserUrlInput.getText().toString()));
-        try {
-            android.view.inputmethod.InputMethodManager imm =
-                    (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-            if (imm != null) imm.hideSoftInputFromWindow(browserUrlInput.getWindowToken(), 0);
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private void updateBrowserNav() {
-        if (browserWeb == null) return;
-        if (browserBackBtn != null) browserBackBtn.setAlpha(browserWeb.canGoBack() ? 1f : 0.4f);
-        if (browserFwdBtn != null) browserFwdBtn.setAlpha(browserWeb.canGoForward() ? 1f : 0.4f);
-    }
-
-    private TextView addBrowserNavBtn(LinearLayout parent, String label, View.OnClickListener l) {
-        TextView b = new TextView(this);
-        b.setText(label);
-        b.setTextColor(Color.WHITE);
-        b.setTextSize(18);
-        b.setGravity(Gravity.CENTER);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0xFF172033);
-        bg.setCornerRadius(dp(10));
-        b.setBackground(bg);
-        b.setOnClickListener(l);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(42), 1f);
-        lp.leftMargin = dp(4);
-        lp.rightMargin = dp(4);
-        parent.addView(b, lp);
-        return b;
-    }
-
-    private void buildBrowserDialogIfNeeded() {
-        if (browserDialog != null) return;
-        browserDialog = new android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
-
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackgroundColor(0xFF050816);
-
-        LinearLayout top = new LinearLayout(this);
-        top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        top.setPadding(dp(8), dp(8), dp(8), dp(8));
-
-        TextView closeBtn = new TextView(this);
-        closeBtn.setText("‹");
-        closeBtn.setTextColor(Color.WHITE);
-        closeBtn.setTextSize(26);
-        closeBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        closeBtn.setGravity(Gravity.CENTER);
-        closeBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (browserDialog != null) browserDialog.dismiss();
-            }
-        });
-        top.addView(closeBtn, new LinearLayout.LayoutParams(dp(40), dp(40)));
-
-        browserUrlInput = new android.widget.EditText(this);
-        browserUrlInput.setHint("Search या website URL…");
-        browserUrlInput.setHintTextColor(0x8AFFFFFF);
-        browserUrlInput.setTextColor(Color.WHITE);
-        browserUrlInput.setSingleLine(true);
-        browserUrlInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_GO);
-        GradientDrawable ubg = new GradientDrawable();
-        ubg.setColor(0x1AFFFFFF);
-        ubg.setCornerRadius(dp(12));
-        browserUrlInput.setBackground(ubg);
-        browserUrlInput.setPadding(dp(12), 0, dp(12), 0);
-        browserUrlInput.setOnEditorActionListener(new TextView.OnEditorActionListener() {
-            @Override
-            public boolean onEditorAction(TextView v, int actionId, android.view.KeyEvent event) {
-                browserGo();
-                return true;
-            }
-        });
-        LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(0, dp(40), 1f);
-        top.addView(browserUrlInput, ulp);
-
-        TextView goBtn = new TextView(this);
-        goBtn.setText("Go");
-        goBtn.setTextColor(Color.WHITE);
-        goBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        goBtn.setGravity(Gravity.CENTER);
-        GradientDrawable gbg = new GradientDrawable();
-        gbg.setColor(0xFF16A34A);
-        gbg.setCornerRadius(dp(12));
-        goBtn.setBackground(gbg);
-        goBtn.setPadding(dp(14), 0, dp(14), 0);
-        goBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                browserGo();
-            }
-        });
-        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
-        glp.leftMargin = dp(6);
-        top.addView(goBtn, glp);
-        box.addView(top);
-
-        browserWeb = new WebView(this);
-        WebSettings bs = browserWeb.getSettings();
-        bs.setJavaScriptEnabled(true);
-        bs.setDomStorageEnabled(true);
-        bs.setLoadWithOverviewMode(true);
-        bs.setUseWideViewPort(true);
-        bs.setSupportZoom(true);
-        bs.setBuiltInZoomControls(true);
-        bs.setDisplayZoomControls(false);
-        browserWeb.setWebChromeClient(new WebChromeClient());
-        browserWeb.setWebViewClient(new WebViewClient() {
-            @Override
-            public void onPageFinished(WebView v, String url) {
-                if (browserUrlInput != null) browserUrlInput.setText(url);
-                updateBrowserNav();
-            }
-        });
-        box.addView(browserWeb, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        LinearLayout bottom = new LinearLayout(this);
-        bottom.setOrientation(LinearLayout.HORIZONTAL);
-        bottom.setPadding(dp(8), dp(8), dp(8), dp(8));
-        bottom.setBackgroundColor(0xFF0F172A);
-        browserBackBtn = addBrowserNavBtn(bottom, "◀", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (browserWeb != null && browserWeb.canGoBack()) browserWeb.goBack();
-            }
-        });
-        browserFwdBtn = addBrowserNavBtn(bottom, "▶", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (browserWeb != null && browserWeb.canGoForward()) browserWeb.goForward();
-            }
-        });
-        addBrowserNavBtn(bottom, "⟳", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (browserWeb != null) browserWeb.reload();
-            }
-        });
-        addBrowserNavBtn(bottom, "🏠", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (browserWeb != null) browserWeb.loadUrl(BROWSER_HOME);
-            }
-        });
-        box.addView(bottom);
-
-        browserDialog.setContentView(box);
-        browserDialog.setOnKeyListener(new android.content.DialogInterface.OnKeyListener() {
-            @Override
-            public boolean onKey(android.content.DialogInterface d, int keyCode, android.view.KeyEvent event) {
-                if (keyCode == android.view.KeyEvent.KEYCODE_BACK
-                        && event.getAction() == android.view.KeyEvent.ACTION_UP) {
-                    if (browserWeb != null && browserWeb.canGoBack()) {
-                        browserWeb.goBack();
-                        return true;
-                    }
-                }
-                return false;
-            }
-        });
-        browserWeb.loadUrl(BROWSER_HOME);
-    }
-
-    /** चुनने से पहले पक्का करना: एक बार चुना तो बदल नहीं सकते */
-    private void vipPickConfirm(final int f) {
-        if (vipHas(f)) return;
-        if (vipPicksLeft() <= 0) {
-            Toast.makeText(this, "VIP " + vipLevel + " के सारे चुनाव हो चुके, VIP बढ़ाएँ", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        new android.app.AlertDialog.Builder(this)
-                .setMessage("\"" + VIP_TITLE[f - 1] + "\" चुनें?\n\nएक बार चुनने के बाद इसे बदल नहीं सकेंगे। "
-                        + "24 घंटे बाद सारे VIP ख़त्म हो जाएँगे।")
-                .setPositiveButton("✔ ठीक है", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        if (vipExpireIfNeeded() || vipPicksLeft() <= 0 || vipHas(f)) return;
-                        vipPicks |= (1 << f);
-                        saveVip();
-                        updateVipCard();
-                        refreshVipPage();
-                        Toast.makeText(MainActivity.this, "✅ " + VIP_TITLE[f - 1] + " चालू हो गया",
-                                Toast.LENGTH_SHORT).show();
-                        if (f == F_WAVE && waveSwitch != null) waveSwitch.setChecked(true);
-                        if (f == F_MUSIC && musicSwitch != null) musicSwitch.setChecked(true);
-                    }
-                })
-                .setNegativeButton("रद्द", null)
-                .show();
-    }
-
-
-    // ---- फुलस्क्रीन से पहले का नोटिस (वीडियो के ठीक नीचे) ----
-    private LinearLayout fsNotice;
-
     private TextView noticeBtn(String text, int bg, int fg) {
         TextView b = new TextView(this);
         b.setText(text);
@@ -1701,11 +1106,45 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------
     // Shorts: सबसे नीचे एक बैनर
     // ------------------------------------------------------------------
+    private LinearLayout shortsTools;
+
     private void buildShortsBanner() {
         shortsHolder = new FrameLayout(this);
         shortsHolder.setVisibility(View.GONE);
         root.addView(shortsHolder, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(SHORTS_BANNER_H), Gravity.BOTTOM));
+
+        // Shorts के ऊपर ही: ✋ हाथ लहराकर अगला Shorts का स्विच (अब सबके लिए)
+        shortsTools = new LinearLayout(this);
+        shortsTools.setOrientation(LinearLayout.HORIZONTAL);
+        shortsTools.setGravity(Gravity.CENTER_VERTICAL);
+        shortsTools.setPadding(dp(10), dp(2), dp(4), dp(2));
+        shortsTools.setBackground(roundBg(0x99000000));
+        shortsTools.setElevation(dp(8));
+        shortsTools.setVisibility(View.GONE);
+        TextView wIcon = new TextView(this);
+        wIcon.setText("✋");
+        wIcon.setTextSize(16);
+        shortsTools.addView(wIcon);
+        waveSwitch = new Switch(this);
+        waveSwitch.setChecked(waveOn);
+        int[][] wst = new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}};
+        waveSwitch.setThumbTintList(new ColorStateList(wst, new int[]{0xFFFFFFFF, 0xFFDDDDDD}));
+        waveSwitch.setTrackTintList(new ColorStateList(wst, new int[]{0xFF2ECC71, 0x66FFFFFF}));
+        waveSwitch.setScaleX(0.8f);
+        waveSwitch.setScaleY(0.8f);
+        waveSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                setWave(on);
+            }
+        });
+        shortsTools.addView(waveSwitch);
+        FrameLayout.LayoutParams stLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.LEFT);
+        stLp.setMargins(dp(10), dp(10), 0, 0);
+        root.addView(shortsTools, stLp);
     }
 
     /** पक्का करने के लिए: हर ~1 सेकंड में YouTube का मौजूदा URL देखकर Shorts पहचानता है */
@@ -1713,9 +1152,20 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             if (ytWeb != null && !ytLocked) onYtUrl(ytWeb.getUrl());
+            if (inlineOn && mode == MODE_MINI && inlineKey != null && ytWeb == homeWeb
+                    && !inlineKey.equals(pageKey())) stopPlayer();   // दूसरे पेज पर गए: वीडियो बंद
             if (root != null) root.postDelayed(this, 1000);
         }
     };
+
+    private String pageKey() {
+        try {
+            Uri u = Uri.parse(ytWeb == null ? "" : String.valueOf(ytWeb.getUrl()));
+            return u.getHost() + u.getPath();
+        } catch (Exception e) {
+            return "";
+        }
+    }
 
     private static boolean isShortsPage(String url) {
         if (url == null) return false;
@@ -1736,16 +1186,14 @@ public class MainActivity extends Activity {
         updateShortsBanner(true);
     }
 
-    /** बैनर लोड हो चुका हो तभी YouTube पेज के नीचे जगह छोड़ते हैं (वरना खाली पट्टी दिखेगी) */
     private boolean shortsBannerShown() {
-        return onShorts && adsReady && shortsSlot != null && shortsSlot.ok;
+        return false;
     }
 
     private int ytBottomMargin() {
-        int b = shortsBannerShown() ? dp(SHORTS_BANNER_H) : 0;
+        int b = 0;
         // नीचे ऑडियो बार हो तो YouTube पेज उसके ऊपर तक ही रहे (बार पेज को ढके नहीं)
-        if (mode == MODE_MINI && musicOn && !inPip) b = Math.max(b, dp(MUSIC_BAR_H));
-        if (vipCardShown()) b = Math.max(b, dp(VIP_CARD_H));      // नीचे VIP कार्ड के लिए जगह
+        if (mode == MODE_MINI && musicOn && !inPip) b = dp(MUSIC_BAR_H);
         return b;
     }
 
@@ -1762,31 +1210,9 @@ public class MainActivity extends Activity {
 
     private void updateShortsBanner(boolean tryLoad) {
         updateVipCard();
-        if (shortsHolder == null) return;
-        if (!onShorts || !adsReady) {
-            shortsHolder.setVisibility(View.GONE);
-        } else {
-            if (shortsSlot == null) {
-                shortsSlot = makeSlot();
-                if (shortsSlot != null) {
-                    shortsSlot.toastErr = SHORTS_DEBUG_TOAST;
-                    shortsSlot.retryMs = 10000;
-                    shortsSlot.onChanged = new Runnable() {
-                        @Override
-                        public void run() {
-                            updateShortsBanner(false);
-                        }
-                    };
-                    shortsHolder.addView(shortsSlot.view, new FrameLayout.LayoutParams(
-                            dp(320), dp(50), Gravity.CENTER));
-                }
-            }
-            shortsHolder.setBackgroundColor(shortsBannerShown() ? Color.WHITE : Color.TRANSPARENT);
-            shortsHolder.setVisibility(View.VISIBLE);
-            if (tryLoad && shortsSlot != null) {
-                if (!shortsSlot.ok && !shortsSlot.loading && shortsSlot.tries >= 8) shortsSlot.tries = 0;
-                shortsSlot.load();
-            }
+        if (shortsHolder != null) shortsHolder.setVisibility(View.GONE);
+        if (shortsTools != null) {
+            shortsTools.setVisibility(onShorts && mode == MODE_NONE && !fsOn ? View.VISIBLE : View.GONE);
         }
         applyYtMargin();
         if (mode == MODE_MINI) placeMini();
@@ -1888,27 +1314,8 @@ public class MainActivity extends Activity {
         });
         top.addView(close, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
-        // ✕ और होम के बीच: रिवॉर्डेड वीडियो बटन
-        rewBtn = new TextView(this);
-        rewBtn.setTextColor(Color.WHITE);
-        rewBtn.setTextSize(13);
-        rewBtn.setEllipsize(TextUtils.TruncateAt.END);
-        rewBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        rewBtn.setGravity(Gravity.CENTER);
-        rewBtn.setSingleLine(true);
-        rewBtn.setPadding(dp(10), 0, dp(10), 0);
-        rewBtn.setElevation(dp(4));
-        updateRewBtn();
-        rewBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                showVipPage();
-            }
-        });
-        LinearLayout.LayoutParams rbLp = new LinearLayout.LayoutParams(0, dp(38), 1f);
-        rbLp.leftMargin = dp(12);
-        rbLp.rightMargin = dp(6);
-        top.addView(rewBtn, rbLp);
+        // ✕ और बाकी बटनों के बीच खाली जगह
+        top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
 
         // ⭐ पसंदीदा: हाथ-स्विच यहाँ से हटा दिया (अब वह सिर्फ़ VIP पेज से ऑन/ऑफ होता है)
         TextView favBtn = new TextView(this);
@@ -2092,6 +1499,24 @@ public class MainActivity extends Activity {
                 dp(30), dp(30), Gravity.TOP | Gravity.RIGHT);
         clLp.setMargins(0, dp(6), dp(6), 0);
         miniBox.addView(miniClose, clLp);
+
+        // वीडियो के ऊपर 🎵 बटन: दबाने पर म्यूज़िक मोड (सिर्फ़ गाना), फिर दबाने पर वीडियो
+        miniMusic = new TextView(this);
+        miniMusic.setText("🎵");
+        miniMusic.setTextSize(14);
+        miniMusic.setGravity(Gravity.CENTER);
+        miniMusic.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (musicSwitch != null) musicSwitch.setChecked(!musicOn);
+                else setMusic(!musicOn);
+            }
+        });
+        FrameLayout.LayoutParams mmLp = new FrameLayout.LayoutParams(
+                dp(30), dp(30), Gravity.TOP | Gravity.RIGHT);
+        mmLp.setMargins(0, dp(6), dp(42), 0);
+        miniBox.addView(miniMusic, mmLp);
+        updateMiniMusicBtn();
 
         playerLayer.addView(miniBox, new FrameLayout.LayoutParams(
                 dp(MINI_W), dp(MINI_CARD_H), Gravity.TOP | Gravity.LEFT));
@@ -2472,29 +1897,8 @@ public class MainActivity extends Activity {
             card.setTranslationY(0f);
         }
 
-        // बैनर: सिर्फ़ बड़े प्लेयर में, पोर्ट्रेट में, सीक बार वाले कार्ड के ठीक नीचे
-        boolean portrait = getResources().getConfiguration().orientation
-                != Configuration.ORIENTATION_LANDSCAPE;
-        if (!fsOn && !inPip && !cmOpen && mode == MODE_FULL && portrait) {
-            int rootH = root.getHeight();
-            if (rootH <= 0) rootH = getResources().getDisplayMetrics().heightPixels;
-            int top = lp.topMargin + lp.height + dp(12);
-            int slotH = dp(58);
-            int n = (rootH - top - dp(12)) / slotH;
-            n = Math.max(1, Math.min(MAX_BANNERS, n));
-            FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, n * slotH, Gravity.TOP);
-            bl.topMargin = top;
-            bannerHolder.setLayoutParams(bl);
-            bannerHolder.setVisibility(View.VISIBLE);
-            // बैनर तभी लोड हों जब उनकी जगह दिख रही हो
-            if (adsReady) {
-                ensureSlots(n);
-                loadSlots(n);
-            }
-        } else {
-            bannerHolder.setVisibility(View.GONE);
-        }
+        // कोई बैनर विज्ञापन नहीं
+        bannerHolder.setVisibility(View.GONE);
     }
 
     /** स्टेटस बार / नेविगेशन बार के रंग: बड़े प्लेयर में गहरे, बाकी में वाइट */
@@ -2581,7 +1985,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         resumedNow = true;
-        vipExpireIfNeeded();
+        updateVipCard();
         restoreFromOverlay();     // बाहर की विंडो से वापस ऐप में
         if (orient != null && orient.canDetectOrientation()) orient.enable();
         updateWaveSensor();
@@ -2776,11 +2180,11 @@ public class MainActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 String url = request.getUrl().toString();
                 if (request.isForMainFrame() && view == homeWeb && isShortsPage(url)) {
-                    openShortsOverlay(url);   // होम पेज वैसा ही रहे, Shorts अलग वेबव्यू में
+                    gatedShorts(url);   // होम पेज वैसा ही रहे, Shorts अलग वेबव्यू में
                     return true;
                 }
                 if (request.isForMainFrame() && !isShorts(url) && VideoLink.parse(url) != null) {
-                    openPlayer(url);
+                    gatedPlay(url);
                     return true;
                 }
                 return false;
@@ -3086,7 +2490,9 @@ public class MainActivity extends Activity {
             return;
         }
         musicOn = on;
+        if (on && inlineOn) inlineStop();     // थंबनेल की जगह छोड़ो; अब नीचे ऑडियो बार
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(PREF_MUSIC, on).apply();
+        updateMiniMusicBtn();
         if (pWeb != null) pWeb.evaluateJavascript("window.setMusic&&setMusic(" + on + ")", null);
         if (on && Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
@@ -3094,7 +2500,7 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_NOTIF);
         }
         updateMusicService();
-        if (!on && mode == MODE_MINI) setMode(MODE_MINI);   // नीचे का ऑडियो बार -> छोटी वीडियो विंडो
+        if (mode == MODE_MINI) setMode(MODE_MINI);   // वीडियो विंडो <-> नीचे का ऑडियो बार
         Toast.makeText(this, on ? "🎵 म्यूज़िक मोड चालू: थंबनेल दिखेगा, गाना बजेगा"
                 : "🎵 म्यूज़िक मोड बंद", Toast.LENGTH_SHORT).show();
     }
@@ -3182,6 +2588,13 @@ public class MainActivity extends Activity {
             }
         });
         row.addView(mbPp, new LinearLayout.LayoutParams(dp(46), dp(48)));
+        row.addView(barBtn("🎬", 18, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (musicSwitch != null) musicSwitch.setChecked(false);   // म्यूज़िक बंद -> वीडियो
+                else setMusic(false);
+            }
+        }), new LinearLayout.LayoutParams(dp(42), dp(48)));
         row.addView(barBtn("⏭\uFE0E", 22, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -3489,7 +2902,9 @@ public class MainActivity extends Activity {
     // और थंबनेल निकल जाए तो वीडियो बंद। विंडो पर टैप -> बड़ा प्लेयर
     // ------------------------------------------------------------------
     private boolean inlineOn;
-    private float inX, inY, inViewH;
+    private float inX, inY, inViewH, inTop;
+    private String inlineKey;
+    private static final int INLINE_BAR_H = 38;   // dp: सीक बार + ⚙ + ⛶ की पट्टी
     private int inW, inH, inlineSized;
     private float itDownX, itDownY;
     private boolean itMoved, itSeek;
@@ -3504,6 +2919,7 @@ public class MainActivity extends Activity {
         inW = Math.round((float) (w * d));
         inH = Math.round((float) (h * d));
         inViewH = ytWeb == null ? 0 : ytWeb.getHeight();
+        inTop = a[1] - b[1];
     }
 
     private void placeInline() {
@@ -3513,13 +2929,19 @@ public class MainActivity extends Activity {
             inlineSized = key;
             card.setLayoutParams(new FrameLayout.LayoutParams(inW, inH, Gravity.TOP | Gravity.LEFT));
             miniBox.setLayoutParams(new FrameLayout.LayoutParams(inW, inH, Gravity.TOP | Gravity.LEFT));
-            setMiniPpBottom(dp(22));          // ❚❚ को सीक बार के ऊपर रखो
+            setMiniPpBottom(dp(INLINE_BAR_H + 6));          // ❚❚ को सीक बार के ऊपर रखो
             if (pWeb != null) pWeb.evaluateJavascript("window.setInline&&setInline(true)", null);
         }
         card.setTranslationX(inX);
         card.setTranslationY(inY);
         miniBox.setTranslationX(inX);
         miniBox.setTranslationY(inY);
+    }
+
+    private TextView miniMusic;
+
+    private void updateMiniMusicBtn() {
+        if (miniMusic != null) miniMusic.setBackground(roundBg(musicOn ? 0xCC1B8F3A : 0x99000000));
     }
 
     private void setMiniPpBottom(int px) {
@@ -3537,6 +2959,8 @@ public class MainActivity extends Activity {
         if (!inlineOn) return;
         inlineOn = false;
         inlineSized = 0;
+        inlineKey = null;
+        inQMenu = false;
         setMiniPpBottom(dp(6));
         if (pWeb != null) pWeb.evaluateJavascript("window.setInline&&setInline(false)", null);
         try {
@@ -3549,17 +2973,45 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** थंबनेल वाली विंडो पर छुआई: खिसकाना नहीं; ऊपर-नीचे सरकाओ तो पेज स्क्रॉल हो, टैप तो बड़ा प्लेयर */
+    private int itZone;          // 0 वीडियो, 1 सीक बार, 2 ⚙ क्वालिटी, 3 ⛶ फुलस्क्रीन
+    private boolean inQMenu;     // क्वालिटी मेन्यू खुला है
+
+    /** थंबनेल वाली विंडो पर छुआई: ऊपर-नीचे सरकाओ तो पेज स्क्रॉल हो, टैप तो चलाओ/रोको; नीचे की पट्टी में सीक, ⚙, ⛶ */
     private boolean inlineTouch(View v, MotionEvent e) {
         int a = e.getActionMasked();
-        if (a == MotionEvent.ACTION_DOWN) {
-            itSeek = e.getY() > v.getHeight() - dp(30);     // नीचे की पट्टी = सीक बार
+        if (inQMenu && pWeb != null) {      // क्वालिटी मेन्यू खुला: टच सीधे प्लेयर को (कार्ड और बॉक्स एक ही जगह हैं)
+            pWeb.dispatchTouchEvent(e);
+            return true;
         }
-        if (itSeek) {
-            boolean end = a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL;
-            float f = Math.max(0f, Math.min(1f, e.getX() / Math.max(1, v.getWidth())));
+        int w = v.getWidth(), h = v.getHeight();
+        if (a == MotionEvent.ACTION_DOWN) {
+            if (e.getY() > h - dp(INLINE_BAR_H)) {
+                if (e.getX() > w - dp(44)) itZone = 3;
+                else if (e.getX() > w - dp(88)) itZone = 2;
+                else itZone = 1;
+            } else {
+                itZone = 0;
+            }
+        }
+        boolean end = a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL;
+        if (itZone == 1) {
+            float l = dp(10), r = w - dp(92);
+            float f = Math.max(0f, Math.min(1f, (e.getX() - l) / Math.max(1f, r - l)));
             if (pWeb != null) pWeb.evaluateJavascript("seekFrac(" + f + "," + end + ")", null);
-            if (end) itSeek = false;
+            if (end) itZone = 0;
+            return true;
+        }
+        if (itZone == 2 || itZone == 3) {
+            if (a == MotionEvent.ACTION_UP) {
+                if (itZone == 3) {
+                    inlineStop();
+                    setMode(MODE_FULL);
+                    setFullscreen(true);
+                } else if (pWeb != null) {
+                    pWeb.evaluateJavascript("openQ()", null);
+                }
+            }
+            if (end) itZone = 0;
             return true;
         }
         if (a == MotionEvent.ACTION_DOWN) {
@@ -3571,7 +3023,7 @@ public class MainActivity extends Activity {
             if (Math.hypot(e.getRawX() - itDownX, e.getRawY() - itDownY) > slop) itMoved = true;
         }
         if (ytWeb == null) {
-            if (a == MotionEvent.ACTION_UP && !itMoved) v.performClick();
+            if (a == MotionEvent.ACTION_UP && !itMoved && pWeb != null) pWeb.evaluateJavascript("toggle()", null);
             return true;
         }
         int[] loc = new int[2];
@@ -3582,7 +3034,7 @@ public class MainActivity extends Activity {
             c.setAction(MotionEvent.ACTION_CANCEL);     // पेज पर थंबनेल का लिंक दोबारा न चले
             ytWeb.dispatchTouchEvent(c);
             c.recycle();
-            v.performClick();
+            if (pWeb != null) pWeb.evaluateJavascript("toggle()", null);   // टैप = चलाओ/रोको
             return true;
         }
         ytWeb.dispatchTouchEvent(c);
@@ -3985,7 +3437,7 @@ public class MainActivity extends Activity {
             String url = m.group();
             if (VideoLink.parse(url) != null) {
                 if (mode == MODE_MINI) setMode(MODE_FULL);   // शेयर किया लिंक बड़े प्लेयर में
-                openPlayer(url);
+                gatedPlay(url);
             }
         }
     }
@@ -3999,7 +3451,7 @@ public class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    openShortsOverlay(url);
+                    gatedShorts(url);
                 }
             });
             return true;
@@ -4022,14 +3474,20 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     if (VideoLink.parse(url) == null) return;
-                    if (musicOn || !vipHas(F_INLINE) || ytWeb != homeWeb || w < 60 || h < 30) {
-                        openPlayer(url);
-                        return;
-                    }
-                    inlineSet(l, tp, w, h);
-                    inlineOn = true;
-                    inlineSized = 0;
-                    openPlayer(url);
+                    withAccess(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (musicOn || ytWeb != homeWeb || w < 60 || h < 30) {
+                                openPlayer(url);
+                                return;
+                            }
+                            inlineSet(l, tp, w, h);
+                            inlineOn = true;
+                            inlineSized = 0;
+                            inlineKey = pageKey();
+                            openPlayer(url);
+                        }
+                    });
                 }
             });
         }
@@ -4042,22 +3500,27 @@ public class MainActivity extends Activity {
                 public void run() {
                     if (!inlineOn || mode != MODE_MINI) return;
                     inlineSet(l, tp, w, h);
+                    // वीडियो ऊपर टिका रहे (sticky): थंबनेल स्क्रॉल होकर निकले तो भी स्क्रीन के ऊपर रुकता है,
+                    // बाकी वीडियो उसकी सीक बार के नीचे से सरकते जाते हैं
+                    float minY = inTop;
+                    float maxY = Math.max(minY, inTop + inViewH - inH);
+                    if (inY < minY) inY = minY;
+                    else if (inY > maxY) inY = maxY;
                     placeInline();
-                    // थंबनेल ऊपर (या नीचे) स्क्रॉल होकर निकल गया -> वीडियो पूरा बंद
-                    float d = getResources().getDisplayMetrics().density;
-                    float topRel = (float) (tp * d);
-                    if (topRel + inH * 0.6f < 0 || topRel > inViewH - inH * 0.4f) stopPlayer();
                 }
             });
         }
 
-        /** पेज बदल गया, थंबनेल रहा ही नहीं */
+        /** थंबनेल का एलिमेंट बदल गया: वीडियो ऊपर टिका रहे (पेज बदला हो तो urlPoll बंद कर देगा) */
         @JavascriptInterface
         public void pinLost() {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    if (inlineOn && mode == MODE_MINI) stopPlayer();
+                    if (inlineOn && mode == MODE_MINI) {
+                        inY = inTop;
+                        placeInline();
+                    }
                 }
             });
         }
@@ -4067,7 +3530,7 @@ public class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    if (VideoLink.parse(url) != null) openPlayer(url);
+                    if (VideoLink.parse(url) != null) withAccess(() -> openPlayer(url));
                 }
             });
         }
@@ -4075,6 +3538,17 @@ public class MainActivity extends Activity {
 
     /** प्लेयर पेज से: तैयार है / चल रहा है या रुका */
     private class NativeBridge {
+        /** ⚙ क्वालिटी मेन्यू खुला / बंद (थंबनेल वाले प्लेयर में टच सही जगह भेजने के लिए) */
+        @JavascriptInterface
+        public void qmenu(final boolean open) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    inQMenu = open;
+                }
+            });
+        }
+
         /** नीचे की बार के 💬 बटन से: कमेंट खोलो / बंद करो */
         @JavascriptInterface
         public void comments(final String videoId) {
