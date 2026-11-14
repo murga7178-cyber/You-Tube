@@ -1023,6 +1023,8 @@ public class MainActivity extends Activity {
         return b;
     }
 
+    private LinearLayout fsNotice;
+
     private void buildFsNotice() {
         fsNotice = new LinearLayout(this);
         fsNotice.setOrientation(LinearLayout.VERTICAL);
@@ -4277,14 +4279,6 @@ public class MainActivity extends Activity {
         if (ytWeb != null) {
             ytWeb.destroy();
             ytWeb = null;
-        }
-        if (browserWeb != null) {
-            try {
-                browserWeb.loadUrl("about:blank");
-                browserWeb.destroy();
-            } catch (Throwable ignored) {
-            }
-            browserWeb = null;
         }
         super.onDestroy();
     }
