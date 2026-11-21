@@ -356,6 +356,8 @@ public class MainActivity extends Activity {
     private FrameLayout loadView;
     private TextView loadTitle, loadSub, loadRetry, loadLogo, loadBrowse, loadNetSet;
     private int loadFails;
+    private int adInitTries;
+    private volatile String adStatus = "शुरू नहीं हुआ";
     private volatile boolean proxyMode;   // WebView का अपना नेट फेल हो तो पेज ऐप के सीधे नेट से मँगवाओ
     private String lastErr = "अभी तक कोई नहीं";
     private android.net.ConnectivityManager.NetworkCallback netCb;
@@ -619,7 +621,8 @@ public class MainActivity extends Activity {
                 }
                 loadTitle.setText("जाँच का नतीजा");
                 loadSub.setText(direct + "\n2) WebView: " + res[0]
-                        + "\nपिछला पेज-error: " + lastErr);
+                        + "\nपिछला पेज-error: " + lastErr
+                        + "\nविज्ञापन: " + adStatus);
             }
         };
         tw.setWebViewClient(new WebViewClient() {
@@ -801,6 +804,7 @@ public class MainActivity extends Activity {
                 public void onUnityAdsAdLoaded(String placementId) {
                     rewLoading = false;
                     rewReady = true;
+                    adStatus = "विज्ञापन तैयार ✅";
                 }
 
                 @Override
@@ -808,6 +812,7 @@ public class MainActivity extends Activity {
                         UnityAds.UnityAdsLoadError error, String message) {
                     rewLoading = false;
                     Log.e("UnityRewarded", "load failed: " + message);
+                    adStatus = "विज्ञापन लोड फेल ❌ " + error + ": " + message;
                     // 30 सेकंड बाद फिर कोशिश
                     root.postDelayed(new Runnable() {
                         @Override
@@ -4118,6 +4123,7 @@ public class MainActivity extends Activity {
     }
 
     private void initAds() {
+        adStatus = "init चल रहा है…";
         try {
             UnityAds.initialize(getApplicationContext(), UNITY_GAME_ID, UNITY_TEST_MODE,
                     new IUnityAdsInitializationListener() {
@@ -4127,6 +4133,7 @@ public class MainActivity extends Activity {
                                 @Override
                                 public void run() {
                                     adsReady = true;
+                                    adStatus = "init ठीक ✅, विज्ञापन लोड हो रहा है…";
                                     if (card != null && mode != MODE_NONE) applyCardLayout();
                                     updateShortsBanner(true);
                                     loadRewarded();
@@ -4139,6 +4146,16 @@ public class MainActivity extends Activity {
                                 UnityAds.UnityAdsInitializationError error, String message) {
                             // विज्ञापन न आए तो भी ऐप चलता रहेगा
                             Log.e("UnityBanner", "init failed: " + message);
+                            adStatus = "init फेल ❌ " + error + ": " + message;
+                            // नेट धीमा हो तो विज्ञापन-सिस्टम को 20 सेकंड बाद फिर शुरू करो (5 बार तक)
+                            if (adInitTries++ < 5 && root != null) {
+                                root.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (!adsReady) initAds();
+                                    }
+                                }, 20000);
+                            }
                         }
                     });
         } catch (Throwable ignored) {
