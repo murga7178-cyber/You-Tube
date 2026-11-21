@@ -344,6 +344,7 @@ public class MainActivity extends Activity {
 
         forceLightCookie(cm);
         ytWeb.loadUrl(HOME);
+        watchNetwork();
         root.postDelayed(urlPoll, 1000);
         handleShare(getIntent());
     }
@@ -352,7 +353,9 @@ public class MainActivity extends Activity {
     // लोडिंग / नेटवर्क स्क्रीन: पेज ठीक से आने तक सुंदर स्क्रीन, काली/खाली स्क्रीन नहीं
     // ------------------------------------------------------------------
     private FrameLayout loadView;
-    private TextView loadTitle, loadSub, loadRetry, loadLogo;
+    private TextView loadTitle, loadSub, loadRetry, loadLogo, loadBrowse, loadNetSet;
+    private int loadFails;
+    private android.net.ConnectivityManager.NetworkCallback netCb;
     private ProgressBar loadBar;
     private ObjectAnimator loadPulse;
     private boolean ytLoadFailed;
@@ -487,6 +490,56 @@ public class MainActivity extends Activity {
         rl.topMargin = dp(22);
         col.addView(loadRetry, rl);
 
+        // ब्राउज़र में खोलो: ऐप के अंदर लोड न हो तब भी कुछ क्लिक करने को हो, जिससे इंटरनेट चले
+        loadBrowse = makeLoadPill("🌐  ब्राउज़र में खोलें", 0xFF1565C0, 0xFF42A5F5);
+        loadBrowse.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                try {
+                    String u = failedUrl != null ? failedUrl : HOME;
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(u))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                } catch (Throwable ignored) {
+                }
+            }
+        });
+
+        loadNetSet = makeLoadPill("⚙  इंटरनेट सेटिंग", 0xFF455A64, 0xFF78909C);
+        loadNetSet.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                try {
+                    startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                } catch (Throwable ignored) {
+                }
+            }
+        });
+        col.addView(loadNetSet, pillParams());
+
+        // नीचे हमेशा दिखने वाली पट्टी: ब्राउज़र (नेट वहाँ चलता है) + नेट जाँच
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER);
+        bar.setPadding(dp(8), dp(8), dp(8), dp(20));
+        loadBrowse.setVisibility(View.VISIBLE);
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bp.rightMargin = dp(10);
+        bar.addView(loadBrowse, bp);
+        TextView loadTest = makeLoadPill("🔎  नेट जाँचें", 0xFF2E7D32, 0xFF66BB6A);
+        loadTest.setVisibility(View.VISIBLE);
+        loadTest.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                runNetTest();
+            }
+        });
+        bar.addView(loadTest, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        loadView.addView(bar, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
+
         loadView.addView(col, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
         root.addView(loadView, new FrameLayout.LayoutParams(
@@ -501,12 +554,104 @@ public class MainActivity extends Activity {
         loadPulse.setInterpolator(new LinearInterpolator());
     }
 
+    /** असली जाँच: ऐप के अंदर से सीधे इंटरनेट पर पहुँचकर देखो, और नतीजा स्क्रीन पर लिखो */
+    private void runNetTest() {
+        loadTitle.setText("नेट की जाँच…");
+        loadSub.setText("कृपया रुकिए");
+        loadView.setVisibility(View.VISIBLE);
+        final boolean perm = checkSelfPermission("android.permission.INTERNET")
+                == PackageManager.PERMISSION_GRANTED;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String r;
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection)
+                            new java.net.URL("https://www.google.com/generate_204").openConnection();
+                    c.setConnectTimeout(7000);
+                    c.setReadTimeout(7000);
+                    r = "✅ ऐप के अंदर नेट चल रहा है (कोड " + c.getResponseCode() + ")";
+                } catch (Throwable t) {
+                    r = "❌ ऐप के अंदर नेट नहीं चला\n" + t.getClass().getSimpleName() + ": " + t.getMessage();
+                }
+                final String out = r + "\nINTERNET अनुमति: " + (perm ? "मिली है" : "नहीं मिली")
+                        + "\nपैकेज: " + getPackageName();
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        loadTitle.setText("जाँच का नतीजा");
+                        loadSub.setText(out);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private TextView makeLoadPill(String text, int c1, int c2) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextColor(Color.WHITE);
+        t.setTextSize(14);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(24), dp(11), dp(24), dp(11));
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{c1, c2});
+        g.setCornerRadius(dp(24));
+        t.setBackground(g);
+        t.setElevation(dp(3));
+        t.setVisibility(View.GONE);
+        return t;
+    }
+
+    private LinearLayout.LayoutParams pillParams() {
+        LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        l.topMargin = dp(12);
+        return l;
+    }
+
+    private boolean hasNet() {
+        try {
+            android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            android.net.Network n = cm.getActiveNetwork();
+            if (n == null) return false;
+            android.net.NetworkCapabilities c = cm.getNetworkCapabilities(n);
+            return c != null && c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET);
+        } catch (Throwable t) {
+            return true;   // जाँच न हो सके (क्लोन में अनुमति नहीं) तो मान लो नेट है, पेज लोड करके देखो
+        }
+    }
+
+    /** नेट आते ही (या बदलते ही) पेज अपने-आप दोबारा लोड हो */
+    private void watchNetwork() {
+        try {
+            android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            netCb = new android.net.ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(android.net.Network network) {
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (ytLoadFailed && ytWeb != null) retryLoad();
+                        }
+                    });
+                }
+            };
+            cm.registerDefaultNetworkCallback(netCb);
+        } catch (Throwable ignored) {
+            netCb = null;
+        }
+    }
+
     private void showLoading() {
         if (loadView == null) return;
         loadTitle.setText("लोड हो रहा है…");
         loadSub.setText("नेटवर्क जाँच रहे हैं, आपका पेज तैयार हो रहा है");
         loadBar.setVisibility(View.VISIBLE);
         loadRetry.setVisibility(View.GONE);
+        loadNetSet.setVisibility(View.GONE);
         loadView.setVisibility(View.VISIBLE);
         if (!loadPulse.isStarted()) loadPulse.start();
         root.removeCallbacks(autoRetry);
@@ -526,10 +671,15 @@ public class MainActivity extends Activity {
         if (loadView == null) return;
         ytLoadFailed = true;
         failedUrl = url;
-        loadTitle.setText("इंटरनेट नहीं चल रहा 📡");
-        loadSub.setText("कनेक्शन जाँचिए, हम अपने-आप फिर कोशिश कर रहे हैं");
+        loadFails++;
+        boolean net = hasNet();
+        loadTitle.setText(net ? "पेज नहीं खुल पाया 📡" : "इंटरनेट नहीं चल रहा 📡");
+        loadSub.setText(net
+                ? "कनेक्शन है, पर पेज लोड नहीं हुआ। हम अपने-आप फिर कोशिश कर रहे हैं"
+                : "मोबाइल डेटा / वाई-फ़ाई चालू करें, हम अपने-आप फिर कोशिश कर रहे हैं");
         loadBar.setVisibility(View.GONE);
         loadRetry.setVisibility(View.VISIBLE);
+        loadNetSet.setVisibility(View.VISIBLE);
         loadView.setVisibility(View.VISIBLE);
         if (!loadPulse.isStarted()) loadPulse.start();
         root.removeCallbacks(loadSlow);
@@ -541,7 +691,16 @@ public class MainActivity extends Activity {
         if (ytWeb == null) return;   // स्क्रीन बंद हो चुकी हो तो यह देरी वाला टास्क कुछ न करे
         ytLoadFailed = false;
         showLoading();
-        ytWeb.loadUrl(failedUrl != null ? failedUrl : HOME);
+        String u = failedUrl != null ? failedUrl : HOME;
+        // बार-बार फेल हो तो दूसरा पता आज़माओ (m.youtube.com <-> www.youtube.com)
+        if (loadFails > 0 && loadFails % 2 == 0) {
+            if (u.startsWith("https://m.youtube.com")) {
+                u = u.replace("https://m.youtube.com", "https://www.youtube.com");
+            } else if (u.startsWith("https://www.youtube.com")) {
+                u = u.replace("https://www.youtube.com", "https://m.youtube.com");
+            }
+        }
+        ytWeb.loadUrl(u);
     }
 
     private static boolean isShorts(String url) {
@@ -2224,10 +2383,8 @@ public class MainActivity extends Activity {
                 if (view != ytWeb) return;
                 if (request != null && request.isForMainFrame()) {
                     showLoadError(request.getUrl().toString());
-                    // जाँच के लिए: असली error कोड स्क्रीन पर दिखाओ
                     try {
-                        loadSub.setText("Error " + error.getErrorCode() + ": " + error.getDescription()
-                                + "\n" + request.getUrl());
+                        loadSub.setText(loadSub.getText() + "\n(कोड " + error.getErrorCode() + ")");
                     } catch (Throwable ignored) {
                     }
                 }
@@ -4224,6 +4381,11 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        try {
+            if (netCb != null) ((android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE)).unregisterNetworkCallback(netCb);
+        } catch (Throwable ignored) {
+        }
+        netCb = null;
         if (root != null) {
             root.removeCallbacks(vipTick);
             root.removeCallbacks(autoRetry);   // WebView destroy होने के बाद यह देरी वाला retry न चले (NPE क्रैश से बचाव)
