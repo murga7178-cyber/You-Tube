@@ -59,6 +59,7 @@ import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -355,6 +356,8 @@ public class MainActivity extends Activity {
     private FrameLayout loadView;
     private TextView loadTitle, loadSub, loadRetry, loadLogo, loadBrowse, loadNetSet;
     private int loadFails;
+    private volatile boolean proxyMode;   // WebView का अपना नेट फेल हो तो पेज ऐप के सीधे नेट से मँगवाओ
+    private String lastErr = "अभी तक कोई नहीं";
     private android.net.ConnectivityManager.NetworkCallback netCb;
     private ProgressBar loadBar;
     private ObjectAnimator loadPulse;
@@ -515,18 +518,33 @@ public class MainActivity extends Activity {
                 }
             }
         });
-        col.addView(loadNetSet, pillParams());
 
         // नीचे हमेशा दिखने वाली पट्टी: ब्राउज़र (नेट वहाँ चलता है) + नेट जाँच
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER);
         bar.setPadding(dp(8), dp(8), dp(8), dp(20));
-        loadBrowse.setVisibility(View.VISIBLE);
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         bp.rightMargin = dp(10);
-        bar.addView(loadBrowse, bp);
+        TextView loadG = makeLoadPill("🌍  Google खोलें", 0xFFE65100, 0xFFFFA726);
+        loadG.setVisibility(View.VISIBLE);
+        loadG.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openInApp("https://www.google.com");
+            }
+        });
+        bar.addView(loadG, bp);
+        TextView loadYt = makeLoadPill("▶  YouTube", 0xFFC62828, 0xFFEF5350);
+        loadYt.setVisibility(View.VISIBLE);
+        loadYt.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openInApp(HOME);
+            }
+        });
+        bar.addView(loadYt, bp);
         TextView loadTest = makeLoadPill("🔎  नेट जाँचें", 0xFF2E7D32, 0xFF66BB6A);
         loadTest.setVisibility(View.VISIBLE);
         loadTest.setOnClickListener(new View.OnClickListener() {
@@ -554,10 +572,11 @@ public class MainActivity extends Activity {
         loadPulse.setInterpolator(new LinearInterpolator());
     }
 
-    /** असली जाँच: ऐप के अंदर से सीधे इंटरनेट पर पहुँचकर देखो, और नतीजा स्क्रीन पर लिखो */
+    /** जाँच: (1) सीधा नेट  (2) WebView से YouTube खोलकर असली error कोड  -> नतीजा स्क्रीन पर */
     private void runNetTest() {
+        root.removeCallbacks(autoRetry);   // जाँच के बीच अपने-आप रीलोड न हो
         loadTitle.setText("नेट की जाँच…");
-        loadSub.setText("कृपया रुकिए");
+        loadSub.setText("कृपया रुकिए (करीब 15 सेकंड)");
         loadView.setVisibility(View.VISIBLE);
         final boolean perm = checkSelfPermission("android.permission.INTERNET")
                 == PackageManager.PERMISSION_GRANTED;
@@ -570,21 +589,80 @@ public class MainActivity extends Activity {
                             new java.net.URL("https://www.google.com/generate_204").openConnection();
                     c.setConnectTimeout(7000);
                     c.setReadTimeout(7000);
-                    r = "✅ ऐप के अंदर नेट चल रहा है (कोड " + c.getResponseCode() + ")";
+                    r = "1) सीधा नेट: ✅ चला (कोड " + c.getResponseCode() + ")";
                 } catch (Throwable t) {
-                    r = "❌ ऐप के अंदर नेट नहीं चला\n" + t.getClass().getSimpleName() + ": " + t.getMessage();
+                    r = "1) सीधा नेट: ❌ " + t.getClass().getSimpleName() + ": " + t.getMessage();
                 }
-                final String out = r + "\nINTERNET अनुमति: " + (perm ? "मिली है" : "नहीं मिली")
+                final String direct = r + "\nINTERNET अनुमति: " + (perm ? "मिली" : "नहीं मिली")
                         + "\nपैकेज: " + getPackageName();
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        loadTitle.setText("जाँच का नतीजा");
-                        loadSub.setText(out);
+                        runWebViewTest(direct);
                     }
                 });
             }
         }).start();
+    }
+
+    private void runWebViewTest(final String direct) {
+        final String[] res = {null};
+        final WebView tw = new WebView(this);
+        tw.getSettings().setJavaScriptEnabled(true);
+        final Runnable finish = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    tw.stopLoading();
+                    tw.destroy();
+                } catch (Throwable ignored) {
+                }
+                loadTitle.setText("जाँच का नतीजा");
+                loadSub.setText(direct + "\n2) WebView: " + res[0]
+                        + "\nपिछला पेज-error: " + lastErr);
+            }
+        };
+        tw.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView v, String url) {
+                if (res[0] == null) {
+                    res[0] = "✅ पेज खुला";
+                    root.removeCallbacks(finish);
+                    root.post(finish);
+                }
+            }
+
+            @Override
+            public void onReceivedError(WebView v, WebResourceRequest q, WebResourceError e) {
+                if (q != null && q.isForMainFrame() && res[0] == null) {
+                    res[0] = "❌ " + e.getErrorCode() + " " + e.getDescription();
+                    root.removeCallbacks(finish);
+                    root.post(finish);
+                }
+            }
+        });
+        root.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (res[0] == null) {
+                    res[0] = "⏳ 15 सेकंड में जवाब नहीं आया";
+                    finish.run();
+                }
+            }
+        }, 15000);
+        tw.loadUrl("https://m.youtube.com");
+    }
+
+    /** ऐप के अंदर कोई भी पेज खोलो (नेट चल रहा है या नहीं देखने के लिए); फेल हुआ तो error कोड फिर दिखेगा */
+    private void openInApp(String url) {
+        if (ytWeb == null) return;
+        root.removeCallbacks(autoRetry);
+        root.removeCallbacks(loadSlow);
+        ytLoadFailed = false;
+        loadFails = 0;
+        failedUrl = url;
+        loadView.setVisibility(View.GONE);
+        ytWeb.loadUrl(url);
     }
 
     private TextView makeLoadPill(String text, int c1, int c2) {
@@ -675,8 +753,8 @@ public class MainActivity extends Activity {
         boolean net = hasNet();
         loadTitle.setText(net ? "पेज नहीं खुल पाया 📡" : "इंटरनेट नहीं चल रहा 📡");
         loadSub.setText(net
-                ? "कनेक्शन है, पर पेज लोड नहीं हुआ। हम अपने-आप फिर कोशिश कर रहे हैं"
-                : "मोबाइल डेटा / वाई-फ़ाई चालू करें, हम अपने-आप फिर कोशिश कर रहे हैं");
+                ? "कनेक्शन है, पर पेज लोड नहीं हुआ। \"फिर कोशिश करें\" दबाइए"
+                : "मोबाइल डेटा / वाई-फ़ाई चालू करें, फिर \"फिर कोशिश करें\" दबाइए");
         loadBar.setVisibility(View.GONE);
         loadRetry.setVisibility(View.VISIBLE);
         loadNetSet.setVisibility(View.VISIBLE);
@@ -684,7 +762,6 @@ public class MainActivity extends Activity {
         if (!loadPulse.isStarted()) loadPulse.start();
         root.removeCallbacks(loadSlow);
         root.removeCallbacks(autoRetry);
-        root.postDelayed(autoRetry, 5000);
     }
 
     private void retryLoad() {
@@ -2378,13 +2455,74 @@ public class MainActivity extends Activity {
                 }
             }
 
+            /** proxyMode में: WebView का नेट बंद हो तब भी, ऐप का सीधा नेट (जो चल रहा है) इस्तेमाल करके पेज/फ़ाइलें लाओ */
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
+                if (!proxyMode || req == null) return null;
+                try {
+                    if (!"GET".equalsIgnoreCase(req.getMethod())) return null;
+                    String u = req.getUrl().toString();
+                    if (!u.startsWith("http")) return null;
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(u).openConnection();
+                    c.setConnectTimeout(15000);
+                    c.setReadTimeout(25000);
+                    c.setInstanceFollowRedirects(true);
+                    for (java.util.Map.Entry<String, String> e : req.getRequestHeaders().entrySet()) {
+                        String k = e.getKey();
+                        if (k == null || k.equalsIgnoreCase("Accept-Encoding") || k.equalsIgnoreCase("Cookie")) continue;
+                        c.setRequestProperty(k, e.getValue());
+                    }
+                    CookieManager cmg = CookieManager.getInstance();
+                    String ck = cmg.getCookie(u);
+                    if (ck != null) c.setRequestProperty("Cookie", ck);
+                    int code = c.getResponseCode();
+                    java.util.Map<String, String> rh = new java.util.HashMap<String, String>();
+                    for (java.util.Map.Entry<String, java.util.List<String>> e : c.getHeaderFields().entrySet()) {
+                        String k = e.getKey();
+                        if (k == null || e.getValue() == null || e.getValue().isEmpty()) continue;
+                        if (k.equalsIgnoreCase("Set-Cookie")) {
+                            for (String sc : e.getValue()) cmg.setCookie(u, sc);
+                            continue;
+                        }
+                        if (k.equalsIgnoreCase("Content-Encoding") || k.equalsIgnoreCase("Content-Length")
+                                || k.equalsIgnoreCase("Transfer-Encoding")) continue;
+                        rh.put(k, e.getValue().get(0));
+                    }
+                    java.io.InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+                    if (in == null) return null;
+                    String ct = c.getContentType();
+                    String mime = "text/html";
+                    String enc = null;
+                    if (ct != null) {
+                        String[] parts = ct.split(";");
+                        mime = parts[0].trim();
+                        for (String part : parts) {
+                            part = part.trim();
+                            if (part.toLowerCase().startsWith("charset=")) enc = part.substring(8).trim();
+                        }
+                    }
+                    String reason = c.getResponseMessage();
+                    if (reason == null || reason.isEmpty()) reason = "OK";
+                    return new WebResourceResponse(mime, enc, code, reason, rh, in);
+                } catch (Throwable t) {
+                    return null;
+                }
+            }
+
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 if (view != ytWeb) return;
+                if (request != null && request.isForMainFrame() && !proxyMode) {
+                    // WebView का अपना नेट फेल: एक बार सीधे-नेट वाले तरीके से तुरंत दोबारा लोड
+                    proxyMode = true;
+                    view.loadUrl(request.getUrl().toString());
+                    return;
+                }
                 if (request != null && request.isForMainFrame()) {
                     showLoadError(request.getUrl().toString());
                     try {
-                        loadSub.setText(loadSub.getText() + "\n(कोड " + error.getErrorCode() + ")");
+                        lastErr = error.getErrorCode() + " " + error.getDescription();
+                        loadSub.setText(loadSub.getText() + "\n(कोड " + lastErr + ")");
                     } catch (Throwable ignored) {
                     }
                 }
