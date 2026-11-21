@@ -65,6 +65,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ImageView;
@@ -309,6 +310,7 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         buildLoadingView();
+        buildDirectSearch();
         loadView.setVisibility(View.GONE);   // ऐप खुलते समय लोडिंग नहीं
         buildShortsBanner();
         buildPlayerLayer();
@@ -356,6 +358,7 @@ public class MainActivity extends Activity {
     private FrameLayout loadView;
     private TextView loadTitle, loadSub, loadRetry, loadLogo, loadBrowse, loadNetSet;
     private int loadFails;
+    private FrameLayout dsPanel;   // सीधा-नेट खोज पैनल (WebView नहीं, सीधा HTTP)
     private int adInitTries;
     private volatile String adStatus = "शुरू नहीं हुआ";
     private volatile boolean proxyMode;   // WebView का अपना नेट फेल हो तो पेज ऐप के सीधे नेट से मँगवाओ
@@ -666,6 +669,218 @@ public class MainActivity extends Activity {
         failedUrl = url;
         loadView.setVisibility(View.GONE);
         ytWeb.loadUrl(url);
+    }
+
+
+    // ------------------------------------------------------------------
+    // सीधी खोज: WebView का इस्तेमाल नहीं, सीधे HTTP से टेक्स्ट + फ़ोटो लाता है
+    // (वहाँ काम आता है जहाँ WebView का नेट नहीं चलता, पर ऐप का सीधा नेट चलता है)
+    // ------------------------------------------------------------------
+    private void buildDirectSearch() {
+        dsPanel = new FrameLayout(this);
+        dsPanel.setVisibility(View.GONE);
+        dsPanel.setBackgroundColor(0xFFFFFFFF);
+        dsPanel.setClickable(true);
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(dp(14), dp(40), dp(8), dp(8));
+        final EditText box = new EditText(this);
+        box.setHint("कुछ भी खोजिए…");
+        box.setSingleLine(true);
+        head.addView(box, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView close = new TextView(this);
+        close.setText("✕");
+        close.setTextSize(20);
+        close.setPadding(dp(14), dp(6), dp(6), dp(6));
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                dsPanel.setVisibility(View.GONE);
+            }
+        });
+        head.addView(close, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        col.addView(head, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final ScrollView scroll = new ScrollView(this);
+        final LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(14), dp(4), dp(14), dp(24));
+        scroll.addView(list, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        col.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        box.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override
+            public boolean onEditorAction(TextView v, int actionId, android.view.KeyEvent event) {
+                runDirectSearch(box.getText().toString(), list);
+                return true;
+            }
+        });
+
+        dsPanel.addView(col, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(dsPanel, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // हमेशा दिखने वाला छोटा गोल बटन, नीचे-दाईं तरफ़, पर क्लिक से खुले
+        TextView fab = new TextView(this);
+        fab.setText("🔎");
+        fab.setTextSize(22);
+        fab.setGravity(Gravity.CENTER);
+        GradientDrawable fg = new GradientDrawable();
+        fg.setShape(GradientDrawable.OVAL);
+        fg.setColor(0xFFFF1A1A);
+        fab.setBackground(fg);
+        fab.setElevation(dp(8));
+        FrameLayout.LayoutParams fp = new FrameLayout.LayoutParams(dp(52), dp(52));
+        fp.gravity = Gravity.BOTTOM | Gravity.END;
+        fp.bottomMargin = dp(90);
+        fp.rightMargin = dp(16);
+        fab.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                dsPanel.setVisibility(View.VISIBLE);
+                box.requestFocus();
+            }
+        });
+        root.addView(fab, fp);
+    }
+
+    /** सीधे HTTP से (WebView के बिना) खोज के नतीजे + थंबनेल लाता है */
+    private void runDirectSearch(final String qRaw, final LinearLayout list) {
+        final String q = qRaw == null ? "" : qRaw.trim();
+        if (q.isEmpty()) return;
+        list.removeAllViews();
+        final TextView status = new TextView(this);
+        status.setText("खोज रहे हैं…");
+        status.setPadding(0, dp(10), 0, dp(10));
+        list.addView(status);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final java.util.List<String[]> rows = new java.util.ArrayList<>();   // {title, snippet, thumbUrl, pageUrl}
+                String err = null;
+                try {
+                    String api = "https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch="
+                            + java.net.URLEncoder.encode(q, "UTF-8")
+                            + "&gsrlimit=10&prop=pageimages|extracts&exintro=1&explaintext=1&exchars=200"
+                            + "&piprop=thumbnail&pithumbsize=200&format=json";
+                    String body = httpGetText(api, 12000);
+                    org.json.JSONObject root0 = new org.json.JSONObject(body);
+                    org.json.JSONObject pages = root0.getJSONObject("query").getJSONObject("pages");
+                    java.util.Iterator<String> it = pages.keys();
+                    while (it.hasNext()) {
+                        org.json.JSONObject pg = pages.getJSONObject(it.next());
+                        String title = pg.optString("title", "");
+                        String extract = pg.optString("extract", "");
+                        String thumb = pg.has("thumbnail") ? pg.getJSONObject("thumbnail").optString("source", "") : "";
+                        String pageUrl = "https://en.wikipedia.org/wiki/" + java.net.URLEncoder.encode(title.replace(' ', '_'), "UTF-8");
+                        rows.add(new String[]{title, extract, thumb, pageUrl});
+                    }
+                } catch (Throwable t) {
+                    err = t.getClass().getSimpleName() + ": " + t.getMessage();
+                }
+                final String ferr = err;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        list.removeAllViews();
+                        if (ferr != null) {
+                            TextView e = new TextView(MainActivity.this);
+                            e.setText("❌ नेट से नतीजा नहीं आया\n" + ferr);
+                            list.addView(e);
+                            return;
+                        }
+                        if (rows.isEmpty()) {
+                            TextView e = new TextView(MainActivity.this);
+                            e.setText("कुछ नहीं मिला");
+                            list.addView(e);
+                            return;
+                        }
+                        for (String[] r : rows) addResultRow(list, r[0], r[1], r[2], r[3]);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void addResultRow(LinearLayout list, String title, String extract, String thumbUrl, final String pageUrl) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(10), 0, dp(10));
+        row.setClickable(true);
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                dsPanel.setVisibility(View.GONE);
+                openInApp(pageUrl);
+            }
+        });
+
+        ImageView iv = new ImageView(this);
+        iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(64), dp(64));
+        ip.rightMargin = dp(12);
+        iv.setLayoutParams(ip);
+        iv.setBackgroundColor(0xFFEEEEEE);
+        row.addView(iv);
+
+        LinearLayout txt = new LinearLayout(this);
+        txt.setOrientation(LinearLayout.VERTICAL);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTextSize(15);
+        txt.addView(t);
+        TextView d = new TextView(this);
+        d.setText(extract);
+        d.setTextSize(13);
+        d.setTextColor(0xFF555555);
+        txt.addView(d);
+        row.addView(txt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        list.addView(row, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        if (thumbUrl != null && !thumbUrl.isEmpty()) {
+            loadThumbInto(iv, thumbUrl);
+        }
+    }
+
+    private void loadThumbInto(final ImageView iv, final String url) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                    c.setConnectTimeout(10000);
+                    c.setReadTimeout(10000);
+                    final android.graphics.Bitmap bmp = BitmapFactory.decodeStream(c.getInputStream());
+                    if (bmp != null) {
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                iv.setImageBitmap(bmp);
+                            }
+                        });
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }).start();
+    }
+
+    private String httpGetText(String url, int timeoutMs) throws Exception {
+        java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+        c.setConnectTimeout(timeoutMs);
+        c.setReadTimeout(timeoutMs);
+        c.setRequestProperty("User-Agent", "YtPlayer/1.0");
+        java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(c.getInputStream(), "UTF-8"));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = br.readLine()) != null) sb.append(line);
+        return sb.toString();
     }
 
     private TextView makeLoadPill(String text, int c1, int c2) {
